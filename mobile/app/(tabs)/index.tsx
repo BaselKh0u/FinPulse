@@ -1,8 +1,11 @@
+// mobile/app/(tabs)/index.tsx
+
 import { useEffect, useState } from "react";
 import { StyleSheet, Text, View, FlatList, ActivityIndicator } from "react-native";
 
 import { getStocks } from "../../services/stock.service";
 import { Stock } from "../../models/Stock";
+import StockCard from "../../components/StockCard";
 
 export default function HomeScreen() {
   const [stocks, setStocks] = useState<Stock[]>([]);
@@ -25,48 +28,29 @@ export default function HomeScreen() {
 
   if (loading) {
     return (
-      <View style={styles.center}>
+      <View style={[styles.center, { backgroundColor: "#0b1220" }]}>
         <ActivityIndicator size="large" />
-        <Text style={styles.smallText}>Loading stocks...</Text>
+        <Text style={[styles.smallText, { color: "white" }]}>Loading stocks...</Text>
       </View>
     );
   }
 
   if (error) {
     return (
-      <View style={styles.center}>
+      <View style={[styles.center, { backgroundColor: "#0b1220" }]}>
         <Text style={styles.error}>{error}</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: "#0b1220" }]}>
       <Text style={styles.title}>FinPulse 📈</Text>
 
       <FlatList
         data={stocks}
         keyExtractor={(item) => item.symbol}
-        renderItem={({ item }) => {
-          const isUp = item.change >= 0;
-          return (
-            <View style={styles.card}>
-              <View style={styles.row}>
-                <Text style={styles.symbol}>{item.symbol}</Text>
-                <Text style={styles.name}>{item.name}</Text>
-              </View>
-
-              <View style={styles.row}>
-                <Text style={styles.price}>${item.price.toFixed(2)}</Text>
-                <Text style={[styles.change, isUp ? styles.up : styles.down]}>
-                  {isUp ? "+" : ""}
-                  {item.change.toFixed(2)} ({isUp ? "+" : ""}
-                  {item.changePercent.toFixed(2)}%)
-                </Text>
-              </View>
-            </View>
-          );
-        }}
+        renderItem={({ item }) => <StockCard item={item} />}
       />
     </View>
   );
@@ -74,22 +58,8 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, paddingTop: 60 },
-  title: { fontSize: 28, fontWeight: "700", marginBottom: 16 },
-  card: {
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginBottom: 12,
-    backgroundColor: "white",
-  },
-  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  symbol: { fontSize: 18, fontWeight: "700" },
-  name: { fontSize: 14, opacity: 0.7, flex: 1, textAlign: "right" },
-  price: { fontSize: 18, fontWeight: "600" },
-  change: { fontSize: 14, fontWeight: "600" },
-  up: { color: "green" },
-  down: { color: "red" },
+  title: { fontSize: 28, fontWeight: "700", marginBottom: 16, color: "white" },
+
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8 },
   error: { color: "red", fontSize: 16, fontWeight: "600" },
   smallText: { opacity: 0.7 },
