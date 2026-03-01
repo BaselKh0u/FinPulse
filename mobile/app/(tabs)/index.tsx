@@ -130,3 +130,8 @@ const styles = StyleSheet.create({
   emptyWrap: { paddingTop: 24, alignItems: "center" },
   emptyText: { color: "#94a3b8", fontSize: 14 },
 });
+
+
+
+
+
