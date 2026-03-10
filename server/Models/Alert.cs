@@ -1,7 +1,10 @@
-﻿namespace Server.Models
+﻿using System.ComponentModel.DataAnnotations;
+
+namespace Server.Models
 {
     public class Alert
     {
+        [Key]
         public int AlertId { get; set; } // PK
         public int UserId { get; set; } // FK
         public int StockId { get; set; } // FK
