@@ -12,6 +12,9 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { login } from "@/services/auth.service";
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -22,7 +25,7 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState<boolean>(false);
 
   const canSubmit = useMemo(() => {
-    return email.trim().length > 3 && password.trim().length >= 6 && !loading;
+    return EMAIL_REGEX.test(email.trim()) && password.trim().length >= 6 && !loading;
   }, [email, password, loading]);
 
   async function onLogin() {
@@ -30,15 +33,10 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      // ✅ כרגע Mock: בודק רק פורמט בסיסי
-      const emailOk = email.includes("@") && email.includes(".");
-      if (!emailOk) {
-        Alert.alert("Invalid email", "Please enter a valid email address.");
-        return; // ✅ חשוב כדי שלא ימשיך ל-router
-      }
-
-      // ✅ בהמשך: פה נקרא auth.service.ts ל-API
+      await login({ email: email.trim(), password });
       router.replace("/(tabs)");
+    } catch (err) {
+      Alert.alert("Login failed", err instanceof Error ? err.message : "Please try again.");
     } finally {
       setLoading(false);
     }
@@ -144,7 +142,6 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "#FFFFFF" },
   container: { flex: 1, paddingHorizontal: 22 },
 
-  // ✅ הקטנה קלה + פונט מודרני
   logoWrap: { alignItems: "center", marginTop: 18, marginBottom: 18 },
   logoIcon: {
     width: 66,

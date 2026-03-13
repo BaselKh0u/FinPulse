@@ -13,6 +13,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export default function RegisterScreen() {
   const router = useRouter();
 
@@ -25,7 +27,7 @@ export default function RegisterScreen() {
   const [loading, setLoading] = useState<boolean>(false);
 
   const canSubmit = useMemo(() => {
-    const emailOk = email.trim().includes("@") && email.trim().includes(".");
+    const emailOk = EMAIL_REGEX.test(email.trim());
     return (
       firstName.trim().length >= 2 &&
       lastName.trim().length >= 2 &&
@@ -41,7 +43,7 @@ export default function RegisterScreen() {
 
     setLoading(true);
     try {
-      // ✅ Mock register for now
+      // TODO: call register API when backend is ready
       Alert.alert("Account created ✅", "Now you can login.");
       router.replace("/auth/login");
     } finally {
@@ -165,7 +167,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 22, paddingTop: 8 },
   back: { width: 42, height: 42, justifyContent: "center" },
 
-  // ✅ compact + Inter font
   title: {
     fontSize: 30,
     color: "#0B1220",

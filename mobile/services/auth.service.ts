@@ -12,27 +12,20 @@ export interface AuthResponse {
   userId: string;
 }
 
-const mockUser = {
-  id: "1",
-  email: "demo@finpulse.com",
-  password: "123456",
-};
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function login(
   data: LoginRequest
 ): Promise<AuthResponse> {
   if (USE_MOCK) {
-    if (
-      data.email === mockUser.email &&
-      data.password === mockUser.password
-    ) {
-      return Promise.resolve({
-        token: "mock-token-123",
-        userId: mockUser.id,
-      });
+    if (!EMAIL_REGEX.test(data.email) || data.password.length < 6) {
+      throw new Error("Invalid credentials");
     }
 
-    throw new Error("Invalid credentials");
+    return Promise.resolve({
+      token: "mock-token-123",
+      userId: "mock-user-1",
+    });
   }
 
   return apiRequest<AuthResponse>("/auth/login", {
