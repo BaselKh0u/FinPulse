@@ -30,7 +30,7 @@ export default function ForgotPasswordScreen() {
 
     setLoading(true);
     try {
-      // ✅ Mock reset for now
+      // TODO: call reset password API when backend is ready
       Alert.alert("Email sent ✅", "We sent you a reset link (mock).");
       router.back();
     } finally {
@@ -89,7 +89,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 22, paddingTop: 8 },
   back: { width: 42, height: 42, justifyContent: "center" },
 
-  // ✅ compact + Inter font
   title: {
     fontSize: 30,
     color: "#0B1220",

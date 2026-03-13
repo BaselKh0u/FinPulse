@@ -1,36 +1,44 @@
-// mobile/services/stock.service.ts
-
 import { apiRequest, USE_MOCK } from "./api";
 import { Stock } from "../models/Stock";
 
-const mockStocks: Stock[] = [
+let mockStocks: Stock[] = [
   {
     symbol: "AAPL",
     name: "Apple Inc.",
-    price: 192.4,
-    change: 1.2,
-    changePercent: 0.63,
+    price: 178.35,
+    change: 4.28,
+    changePercent: 2.45,
   },
   {
     symbol: "TSLA",
     name: "Tesla Inc.",
-    price: 244.1,
-    change: -0.8,
-    changePercent: -0.32,
+    price: 235.4,
+    change: -2.86,
+    changePercent: -1.2,
   },
   {
-    symbol: "MSFT",
-    name: "Microsoft Corp.",
-    price: 381.6,
-    change: 0.5,
-    changePercent: 0.13,
+    symbol: "NVDA",
+    name: "Nvidia Corp.",
+    price: 460.15,
+    change: 25.4,
+    changePercent: 5.85,
   },
 ];
 
 export async function getStocks(): Promise<Stock[]> {
+  if (USE_MOCK) return Promise.resolve(mockStocks);
+  return apiRequest<Stock[]>("/stocks");
+}
+
+export async function addStock(newStock: Stock): Promise<void> {
   if (USE_MOCK) {
-    return Promise.resolve(mockStocks);
+    const exists = mockStocks.some((s) => s.symbol.toUpperCase() === newStock.symbol.toUpperCase());
+    if (!exists) mockStocks = [newStock, ...mockStocks];
+    return;
   }
 
-  return apiRequest<Stock[]>("/stocks");
+  await apiRequest("/stocks", {
+    method: "POST",
+    body: JSON.stringify(newStock),
+  });
 }

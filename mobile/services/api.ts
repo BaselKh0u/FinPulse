@@ -1,8 +1,8 @@
 // mobile/services/api.ts
 
-const BASE_URL = "http://localhost:3000"; // בהמשך תשנה לשרת אמיתי
+const BASE_URL = "http://localhost:3000"; // TODO: replace with real server URL
 
-export const USE_MOCK = true; // כרגע עובדים עם Mock
+export const USE_MOCK = true; // TODO: set to false when backend is ready
 
 export async function apiRequest<T>(
   endpoint: string,
@@ -17,7 +17,7 @@ export async function apiRequest<T>(
   });
 
   if (!response.ok) {
-    throw new Error("API request failed");
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
   }
 
   return response.json();
