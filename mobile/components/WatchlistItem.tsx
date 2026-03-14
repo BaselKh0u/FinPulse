@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { Stock } from "../models/Stock";
+import { Stock } from "@/models/Stock";
+import { Colors, Fonts } from "@/theme";
 
 type Props = {
   item: Stock;
@@ -10,21 +11,23 @@ export default function WatchlistItem({ item, onPress }: Props) {
   const isUp = item.changePercent >= 0;
 
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && { opacity: 0.92 }]}
+    >
       <View style={styles.leftIcon}>
         <Text style={styles.iconText}>{item.symbol.charAt(0)}</Text>
       </View>
 
       <View style={styles.mid}>
         <Text style={styles.symbol}>{item.symbol}</Text>
-        <Text style={styles.name}>{item.name}</Text>
+        <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
       </View>
 
       <View style={styles.right}>
         <Text style={styles.price}>${item.price.toFixed(2)}</Text>
         <Text style={[styles.percent, isUp ? styles.up : styles.down]}>
-          {isUp ? "+" : ""}
-          {item.changePercent.toFixed(2)}%
+          {isUp ? "+" : ""}{item.changePercent.toFixed(2)}%
         </Text>
       </View>
     </Pressable>
@@ -35,31 +38,53 @@ const styles = StyleSheet.create({
   card: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: Colors.card,
     borderRadius: 20,
     padding: 16,
-    marginBottom: 14,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
+    marginBottom: 12,
+    shadowColor: Colors.shadow,
+    shadowOpacity: 0.04,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
   },
   leftIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    backgroundColor: "#EFF2F7",
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: Colors.iconBackground,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 14,
   },
-  iconText: { fontSize: 20, fontWeight: "900", color: "#0B1220" },
+  iconText: {
+    fontSize: 20,
+    color: Colors.textPrimary,
+    fontFamily: Fonts.bold,
+  },
   mid: { flex: 1 },
-  symbol: { fontSize: 20, fontWeight: "900", color: "#0B1220" },
-  name: { marginTop: 4, fontSize: 15, fontWeight: "600", color: "#6B758A" },
+  symbol: {
+    fontSize: 18,
+    color: Colors.textPrimary,
+    fontFamily: Fonts.bold,
+  },
+  name: {
+    marginTop: 3,
+    fontSize: 14,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.medium,
+  },
   right: { alignItems: "flex-end" },
-  price: { fontSize: 20, fontWeight: "900", color: "#0B1220" },
-  percent: { marginTop: 6, fontSize: 15, fontWeight: "900" },
-  up: { color: "#18C08B" },
-  down: { color: "#FF4D4F" },
+  price: {
+    fontSize: 18,
+    color: Colors.textPrimary,
+    fontFamily: Fonts.bold,
+  },
+  percent: {
+    marginTop: 4,
+    fontSize: 14,
+    fontFamily: Fonts.bold,
+  },
+  up: { color: Colors.success },
+  down: { color: Colors.danger },
 });

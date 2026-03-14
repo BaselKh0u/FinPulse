@@ -1,8 +1,6 @@
-// mobile/services/api.ts
+const BASE_URL = "http://localhost:5000";
 
-const BASE_URL = "http://localhost:3000"; // TODO: replace with real server URL
-
-export const USE_MOCK = true; // TODO: set to false when backend is ready
+export const USE_MOCK = true;
 
 export async function apiRequest<T>(
   endpoint: string,

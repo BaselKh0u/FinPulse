@@ -1,29 +1,46 @@
-// mobile/services/alert.service.ts
-
 import { apiRequest, USE_MOCK } from "./api";
 import { Alert } from "../models/Alert";
 
-const mockAlerts: Alert[] = [
+let mockAlerts: Alert[] = [
   {
     id: "a1",
-    symbol: "AAPL",
-    type: "price_below",
-    targetPrice: 180,
+    symbol: "NVDA",
+    type: "price_above",
+    targetPrice: 500,
+    description: "Above $500.00",
     isActive: true,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
   },
   {
     id: "a2",
     symbol: "TSLA",
-    type: "price_above",
-    targetPrice: 260,
+    type: "volatility",
+    threshold: 5,
+    description: "Change > 5%",
     isActive: true,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+  },
+  {
+    id: "a3",
+    symbol: "AAPL",
+    type: "earnings",
+    description: "Report Released",
+    isActive: false,
+    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+  },
+  {
+    id: "a4",
+    symbol: "GOOGL",
+    type: "price_below",
+    targetPrice: 130,
+    description: "Below $130.00",
+    isActive: true,
+    createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
   },
 ];
 
 export async function getAlerts(): Promise<Alert[]> {
-  if (USE_MOCK) return Promise.resolve(mockAlerts);
+  if (USE_MOCK) return [...mockAlerts];
   return apiRequest<Alert[]>("/alerts");
 }
 
@@ -36,8 +53,8 @@ export async function createAlert(
       id: `mock-${Date.now()}`,
       createdAt: new Date().toISOString(),
     };
-    mockAlerts.push(newAlert);
-    return Promise.resolve(newAlert);
+    mockAlerts.unshift(newAlert);
+    return newAlert;
   }
 
   return apiRequest<Alert>("/alerts", {
@@ -50,11 +67,20 @@ export async function toggleAlert(alertId: string, isActive: boolean): Promise<v
   if (USE_MOCK) {
     const target = mockAlerts.find((a) => a.id === alertId);
     if (target) target.isActive = isActive;
-    return Promise.resolve();
+    return;
   }
 
   await apiRequest<void>(`/alerts/${alertId}/toggle`, {
     method: "PATCH",
     body: JSON.stringify({ isActive }),
   });
+}
+
+export async function deleteAlert(alertId: string): Promise<void> {
+  if (USE_MOCK) {
+    mockAlerts = mockAlerts.filter((a) => a.id !== alertId);
+    return;
+  }
+
+  await apiRequest<void>(`/alerts/${alertId}`, { method: "DELETE" });
 }

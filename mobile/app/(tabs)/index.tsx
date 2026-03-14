@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -10,59 +10,53 @@ import {
   FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-
 import { getStocks } from "@/services/stock.service";
+import { getMarketData, MarketMood } from "@/services/market.service";
 import { Stock } from "@/models/Stock";
 import WatchlistItem from "@/components/WatchlistItem";
+import { Colors, Fonts } from "@/theme";
+
+const MOCK_BALANCE = 24592.4;
+const MOCK_DELTA = 1294;
+const MOCK_PERCENT = 5.5;
 
 export default function HomeScreen() {
   const router = useRouter();
 
   const [stocks, setStocks] = useState<Stock[]>([]);
+  const [mood, setMood] = useState<MarketMood | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  async function loadStocks() {
-    const data = await getStocks();
-    setStocks(data);
-  }
+  const loadAll = useCallback(async () => {
+    const [stocksData, marketData] = await Promise.all([getStocks(), getMarketData()]);
+    setStocks(stocksData);
+    setMood(marketData.mood);
+  }, []);
 
   useEffect(() => {
     (async () => {
-      try {
-        setLoading(true);
-        await loadStocks();
-      } finally {
-        setLoading(false);
-      }
+      try { setLoading(true); await loadAll(); } finally { setLoading(false); }
     })();
-  }, []);
+  }, [loadAll]);
 
   const onRefresh = async () => {
-    try {
-      setRefreshing(true);
-      await loadStocks();
-    } finally {
-      setRefreshing(false);
-    }
+    try { setRefreshing(true); await loadAll(); } finally { setRefreshing(false); }
   };
 
   const top3 = useMemo(() => stocks.slice(0, 3), [stocks]);
 
-  // Mock “Total Balance” (later: calculate from real portfolio)
-  const totalBalance = 24592.4;
-  const todayDelta = 1294;
-  const todayPercent = 5.5;
+  const isPositive = MOCK_DELTA >= 0;
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.container}>
-        {/* Header */}
+  function renderHeader() {
+    return (
+      <>
         <View style={styles.headerRow}>
           <View style={styles.brandRow}>
             <View style={styles.logoBox}>
-              <Text style={styles.logoBars}>▮▮</Text>
+              <Ionicons name="stats-chart" size={22} color={Colors.white} />
             </View>
             <Text style={styles.brand}>FinPulse</Text>
           </View>
@@ -79,33 +73,54 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        {/* Balance Card */}
         <View style={styles.balanceCard}>
           <Text style={styles.balanceLabel}>Total Balance</Text>
-
           <Text style={styles.balanceValue}>
-            $
-            {totalBalance.toLocaleString(undefined, {
+            ${MOCK_BALANCE.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
           </Text>
-
           <View style={styles.balanceBottom}>
-            <View style={styles.pill}>
-              <Text style={styles.pillText}>
-                ↗ +${todayDelta.toLocaleString()} ({todayPercent.toFixed(1)}%)
+            <View style={[styles.pill, !isPositive && styles.pillNegative]}>
+              <Text style={[styles.pillText, !isPositive && styles.pillTextNegative]}>
+                {isPositive ? "↗" : "↘"} {isPositive ? "+" : "-"}$
+                {Math.abs(MOCK_DELTA).toLocaleString()} ({MOCK_PERCENT.toFixed(1)}%)
               </Text>
             </View>
-
             <Text style={styles.todayText}>Today</Text>
           </View>
         </View>
 
-        {/* Watchlist title */}
+        {/* Market Pulse Card */}
+        {mood && (
+          <Pressable
+            onPress={() => router.push("/(tabs)/market")}
+            style={({ pressed }) => [styles.pulseCard, pressed && { opacity: 0.92 }]}
+          >
+            <View style={styles.pulseLeft}>
+              <View style={styles.pulseIconWrap}>
+                <Ionicons name="pulse" size={20} color={Colors.accent} />
+              </View>
+              <View>
+                <Text style={styles.pulseLabel}>Market Pulse</Text>
+                <Text style={styles.pulseSub}>{mood.label} · Score {(mood.score * 100).toFixed(0)}</Text>
+              </View>
+            </View>
+            <View style={styles.pulseRight}>
+              <View style={[styles.pulseBar, { width: 80 }]}>
+                <View style={[styles.pulseBarFill, {
+                  width: `${mood.score * 100}%`,
+                  backgroundColor: mood.score >= 0.6 ? Colors.success : mood.score >= 0.4 ? Colors.warning : Colors.danger,
+                }]} />
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+            </View>
+          </Pressable>
+        )}
+
         <View style={styles.sectionRow}>
           <Text style={styles.sectionTitle}>Watchlist</Text>
-
           <Pressable
             onPress={() => router.push("/watchlist")}
             hitSlop={10}
@@ -114,45 +129,64 @@ export default function HomeScreen() {
             <Text style={styles.seeAll}>See All</Text>
           </Pressable>
         </View>
+      </>
+    );
+  }
 
-        {/* Loading state (nice, professional) */}
-        {loading ? (
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top"]}>
+        <View style={styles.container}>
+          {renderHeader()}
           <View style={styles.loadingWrap}>
-            <ActivityIndicator size="large" />
+            <ActivityIndicator size="large" color={Colors.accent} />
             <Text style={styles.loadingText}>Loading your watchlist...</Text>
           </View>
-        ) : (
-          <FlatList
-            data={top3}
-            keyExtractor={(item) => item.symbol}
-            renderItem={({ item }) => <WatchlistItem item={item} />}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-            }
-            ListFooterComponent={
-              <Pressable
-                onPress={() => router.push("/watchlist/add")}
-                style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.9 }]}
-              >
-                <Text style={styles.addPlus}>＋</Text>
-                <Text style={styles.addText}>Add New Stock</Text>
-              </Pressable>
-            }
-          />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.safe} edges={["top"]}>
+      <FlatList
+        data={top3}
+        keyExtractor={(item) => item.symbol}
+        renderItem={({ item }) => (
+          <View style={styles.listPadding}>
+            <WatchlistItem item={item} onPress={() => router.push(`/stock/${item.symbol}`)} />
+          </View>
         )}
-      </View>
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        ListHeaderComponent={
+          <View style={styles.container}>{renderHeader()}</View>
+        }
+        ListFooterComponent={
+          <View style={styles.listPadding}>
+            <Pressable
+              onPress={() => router.push("/watchlist/add")}
+              style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}
+            >
+              <View style={styles.addIconWrap}>
+                <Ionicons name="add" size={20} color={Colors.textSecondary} />
+              </View>
+              <Text style={styles.addText}>Add New Stock</Text>
+            </Pressable>
+          </View>
+        }
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#F6F7FB" },
+  safe: { flex: 1, backgroundColor: Colors.background },
 
   container: {
-    flex: 1,
-    backgroundColor: "#F6F7FB",
     paddingHorizontal: 18,
     paddingTop: 10,
   },
@@ -161,43 +195,55 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 18,
+    marginBottom: 20,
   },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   logoBox: {
     width: 42,
     height: 42,
     borderRadius: 12,
-    backgroundColor: "#0B1220",
+    backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
   },
-  logoBars: { color: "#FFFFFF", fontWeight: "900" },
-  brand: { fontSize: 30, fontWeight: "900", color: "#0B1220" },
+  brand: {
+    fontSize: 26,
+    color: Colors.textPrimary,
+    fontFamily: Fonts.bold,
+  },
 
   avatarWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     overflow: "hidden",
     borderWidth: 2,
-    borderColor: "rgba(0,0,0,0.06)",
+    borderColor: Colors.divider,
   },
-  avatar: { width: 46, height: 46 },
+  avatar: { width: 44, height: 44 },
 
   balanceCard: {
-    backgroundColor: "#0B1220",
-    borderRadius: 28,
+    backgroundColor: Colors.primary,
+    borderRadius: 24,
     padding: 22,
-    marginBottom: 22,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
+    marginBottom: 24,
+    shadowColor: Colors.shadow,
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
   },
-  balanceLabel: { fontSize: 18, fontWeight: "700", color: "#A7B0C0" },
-  balanceValue: { marginTop: 10, fontSize: 46, fontWeight: "900", color: "#FFFFFF" },
-
+  balanceLabel: {
+    fontSize: 16,
+    color: Colors.textTertiary,
+    fontFamily: Fonts.semiBold,
+  },
+  balanceValue: {
+    marginTop: 8,
+    fontSize: 40,
+    color: Colors.white,
+    fontFamily: Fonts.bold,
+  },
   balanceBottom: {
     flexDirection: "row",
     alignItems: "center",
@@ -205,13 +251,52 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   pill: {
-    backgroundColor: "rgba(24, 192, 139, 0.18)",
+    backgroundColor: Colors.successLight,
     borderRadius: 999,
-    paddingVertical: 8,
+    paddingVertical: 6,
     paddingHorizontal: 14,
   },
-  pillText: { color: "#18C08B", fontWeight: "900", fontSize: 16 },
-  todayText: { color: "#6B758A", fontWeight: "800", fontSize: 16 },
+  pillNegative: { backgroundColor: Colors.dangerLight },
+  pillText: {
+    color: Colors.success,
+    fontSize: 14,
+    fontFamily: Fonts.bold,
+  },
+  pillTextNegative: { color: Colors.danger },
+  todayText: {
+    color: Colors.textSecondary,
+    fontSize: 14,
+    fontFamily: Fonts.semiBold,
+  },
+
+  pulseCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: Colors.card,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 20,
+    shadowColor: Colors.shadow,
+    shadowOpacity: 0.04,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  pulseLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  pulseIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(44,102,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pulseLabel: { fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.bold },
+  pulseSub: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.medium, marginTop: 2 },
+  pulseRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+  pulseBar: { height: 6, backgroundColor: Colors.iconBackground, borderRadius: 3, overflow: "hidden" },
+  pulseBarFill: { height: 6, borderRadius: 3 },
 
   sectionRow: {
     flexDirection: "row",
@@ -219,43 +304,57 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 14,
   },
-  sectionTitle: { fontSize: 34, fontWeight: "900", color: "#0B1220" },
-  seeAll: { fontSize: 18, fontWeight: "900", color: "#2C66FF" },
+  sectionTitle: {
+    fontSize: 28,
+    color: Colors.textPrimary,
+    fontFamily: Fonts.bold,
+  },
+  seeAll: {
+    fontSize: 16,
+    color: Colors.accent,
+    fontFamily: Fonts.bold,
+  },
 
-  listContent: { paddingBottom: 18 },
+  listPadding: { paddingHorizontal: 18 },
+  listContent: { paddingBottom: 24 },
 
   addBtn: {
-    marginTop: 8,
-    borderRadius: 22,
-    borderWidth: 2,
+    marginTop: 4,
+    borderRadius: 20,
+    borderWidth: 1.5,
     borderStyle: "dashed",
-    borderColor: "#C9D1E1",
-    paddingVertical: 16,
+    borderColor: Colors.borderLight,
+    paddingVertical: 18,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 10,
-    backgroundColor: "rgba(255,255,255,0.7)",
+    backgroundColor: "rgba(255,255,255,0.6)",
   },
-  addPlus: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#E9EDF6",
-    textAlign: "center",
-    textAlignVertical: "center",
-    fontSize: 22,
-    fontWeight: "900",
-    color: "#6B758A",
+  addIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.iconBackgroundAlt,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  addText: { fontSize: 20, fontWeight: "900", color: "#6B758A" },
+  addText: {
+    fontSize: 16,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.bold,
+  },
 
   loadingWrap: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    paddingBottom: 40,
+    gap: 12,
+    paddingVertical: 60,
   },
-  loadingText: { color: "#6B758A", fontWeight: "700" },
+  loadingText: {
+    color: Colors.textSecondary,
+    fontFamily: Fonts.medium,
+    fontSize: 14,
+  },
 });
