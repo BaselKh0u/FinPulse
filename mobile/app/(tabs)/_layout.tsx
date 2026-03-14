@@ -1,14 +1,26 @@
-// mobile/app/(tabs)/_layout.tsx
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { Colors, Fonts } from "@/theme";
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: "#2C66FF",
-        tabBarInactiveTintColor: "#9AA3B2",
+        tabBarActiveTintColor: Colors.tabActive,
+        tabBarInactiveTintColor: Colors.tabInactive,
+        tabBarStyle: {
+          backgroundColor: Colors.white,
+          borderTopColor: Colors.divider,
+          borderTopWidth: 1,
+          height: 88,
+          paddingBottom: 28,
+          paddingTop: 8,
+        },
+        tabBarLabelStyle: {
+          fontFamily: Fonts.medium,
+          fontSize: 11,
+        },
       }}
     >
       <Tabs.Screen
@@ -20,7 +32,6 @@ export default function TabsLayout() {
           ),
         }}
       />
-
       <Tabs.Screen
         name="search"
         options={{
@@ -30,7 +41,15 @@ export default function TabsLayout() {
           ),
         }}
       />
-
+      <Tabs.Screen
+        name="market"
+        options={{
+          title: "Market",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="pulse-outline" color={color} size={size} />
+          ),
+        }}
+      />
       <Tabs.Screen
         name="alerts"
         options={{
@@ -40,7 +59,6 @@ export default function TabsLayout() {
           ),
         }}
       />
-
       <Tabs.Screen
         name="profile"
         options={{
