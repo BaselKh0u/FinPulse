@@ -15,11 +15,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { register } from "@/services/auth.service";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function RegisterScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -200,8 +203,8 @@ export default function RegisterScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
+const createStyles = () => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.background },
   flex: { flex: 1 },
   container: { flex: 1, paddingHorizontal: 22 },
   scrollContent: { paddingTop: 8, paddingBottom: 30 },
@@ -236,7 +239,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 15,
     color: Colors.textPrimary,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.card,
     fontFamily: Fonts.regular,
   },
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -11,12 +11,16 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { getStocks } from "@/services/stock.service";
 import { getMarketData, MarketMood } from "@/services/market.service";
 import { Stock } from "@/models/Stock";
 import WatchlistItem from "@/components/WatchlistItem";
 import { Colors, Fonts } from "@/theme";
+import { getAvatarUri, subscribeAvatarUri } from "@/stores/avatar.store";
+import { useTheme } from "@/stores/theme.store";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
+import { getRefreshMs, subscribeRefresh } from "@/stores/refresh.store";
 
 const MOCK_BALANCE = 24592.4;
 const MOCK_DELTA = 1294;
@@ -24,11 +28,23 @@ const MOCK_PERCENT = 5.5;
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [mood, setMood] = useState<MarketMood | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [avatarUri, setAvatarUri] = useState<string | null>(getAvatarUri());
+  const [currSymbol, setCurrSymbol] = useState(getCurrencySymbol());
+
+  useEffect(() => {
+    return subscribeAvatarUri((uri) => setAvatarUri(uri));
+  }, []);
+
+  useEffect(() => {
+    return subscribeCurrency(() => setCurrSymbol(getCurrencySymbol()));
+  }, []);
 
   const loadAll = useCallback(async () => {
     const [stocksData, marketData] = await Promise.all([getStocks(), getMarketData()]);
@@ -40,6 +56,21 @@ export default function HomeScreen() {
     (async () => {
       try { setLoading(true); await loadAll(); } finally { setLoading(false); }
     })();
+  }, [loadAll]);
+
+  useFocusEffect(useCallback(() => { loadAll(); }, [loadAll]));
+
+  const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    refreshTimer.current = setInterval(() => { loadAll(); }, getRefreshMs());
+    const unsub = subscribeRefresh((ms) => {
+      if (refreshTimer.current) clearInterval(refreshTimer.current);
+      refreshTimer.current = setInterval(() => { loadAll(); }, ms);
+    });
+    return () => {
+      if (refreshTimer.current) clearInterval(refreshTimer.current);
+      unsub();
+    };
   }, [loadAll]);
 
   const onRefresh = async () => {
@@ -66,17 +97,20 @@ export default function HomeScreen() {
             style={({ pressed }) => [styles.avatarWrap, pressed && { opacity: 0.85 }]}
             hitSlop={10}
           >
-            <Image
-              source={{ uri: "https://i.pravatar.cc/150?img=12" }}
-              style={styles.avatar}
-            />
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatar} />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Ionicons name="person" size={22} color={Colors.textTertiary} />
+              </View>
+            )}
           </Pressable>
         </View>
 
         <View style={styles.balanceCard}>
           <Text style={styles.balanceLabel}>Total Balance</Text>
           <Text style={styles.balanceValue}>
-            ${MOCK_BALANCE.toLocaleString(undefined, {
+            {currSymbol}{convertPrice(MOCK_BALANCE).toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
@@ -84,8 +118,8 @@ export default function HomeScreen() {
           <View style={styles.balanceBottom}>
             <View style={[styles.pill, !isPositive && styles.pillNegative]}>
               <Text style={[styles.pillText, !isPositive && styles.pillTextNegative]}>
-                {isPositive ? "↗" : "↘"} {isPositive ? "+" : "-"}$
-                {Math.abs(MOCK_DELTA).toLocaleString()} ({MOCK_PERCENT.toFixed(1)}%)
+                {isPositive ? "↗" : "↘"} {isPositive ? "+" : "-"}{currSymbol}
+                {convertPrice(Math.abs(MOCK_DELTA)).toLocaleString(undefined, { maximumFractionDigits: 0 })} ({MOCK_PERCENT.toFixed(1)}%)
               </Text>
             </View>
             <Text style={styles.todayText}>Today</Text>
@@ -160,7 +194,7 @@ export default function HomeScreen() {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} colors={[Colors.accent]} />
         }
         ListHeaderComponent={
           <View style={styles.container}>{renderHeader()}</View>
@@ -183,7 +217,7 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
 
   container: {
@@ -202,7 +236,7 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 12,
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.logoBox,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -213,17 +247,20 @@ const styles = StyleSheet.create({
   },
 
   avatarWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     overflow: "hidden",
-    borderWidth: 2,
-    borderColor: Colors.divider,
+    backgroundColor: Colors.iconBackground,
   },
-  avatar: { width: 44, height: 44 },
+  avatar: { width: 40, height: 40 },
+  avatarFallback: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.iconBackground,
+    alignItems: "center", justifyContent: "center",
+  },
 
   balanceCard: {
-    backgroundColor: Colors.primary,
+    backgroundColor: Colors.balanceCard,
     borderRadius: 24,
     padding: 22,
     marginBottom: 24,
@@ -235,7 +272,7 @@ const styles = StyleSheet.create({
   },
   balanceLabel: {
     fontSize: 16,
-    color: Colors.textTertiary,
+    color: "rgba(255,255,255,0.6)",
     fontFamily: Fonts.semiBold,
   },
   balanceValue: {
@@ -264,7 +301,7 @@ const styles = StyleSheet.create({
   },
   pillTextNegative: { color: Colors.danger },
   todayText: {
-    color: Colors.textSecondary,
+    color: "rgba(255,255,255,0.5)",
     fontSize: 14,
     fontFamily: Fonts.semiBold,
   },
@@ -329,7 +366,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 10,
-    backgroundColor: "rgba(255,255,255,0.6)",
+    backgroundColor: Colors.card,
   },
   addIconWrap: {
     width: 32,

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Modal,
   Pressable,
@@ -9,14 +10,17 @@ import {
   Switch,
   Text,
   View,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
+import { Swipeable } from "react-native-gesture-handler";
 import { getAlerts, toggleAlert, deleteAlert } from "@/services/alert.service";
 import { Alert as AlertModel, AlertType, ALERT_TYPE_CONFIG } from "@/models/Alert";
 import { Colors, Fonts } from "@/theme";
-import { Alert } from "react-native";
+import { useTheme } from "@/stores/theme.store";
+import * as Haptics from "expo-haptics";
 
 type SortBy = "newest" | "oldest" | "symbol";
 type FilterStatus = "all" | "active" | "inactive";
@@ -35,6 +39,8 @@ function timeAgo(dateStr: string): string {
 
 export default function AlertsScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [alerts, setAlerts] = useState<AlertModel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,49 +84,30 @@ export default function AlertsScreen() {
   const hasActiveFilters = filterStatus !== "all" || filterType !== "all" || sortBy !== "newest";
 
   async function onToggle(id: string, value: boolean) {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await toggleAlert(id, value);
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isActive: value } : a)));
   }
 
-  function onDelete(alert: AlertModel) {
-    Alert.alert("Delete Alert", `Remove ${alert.symbol} ${alert.description}?`, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: async () => {
-        await deleteAlert(alert.id);
-        setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
-      }},
-    ]);
+  async function onSwipeDelete(alert: AlertModel) {
+    try {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await deleteAlert(alert.id);
+      setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
+    } catch {
+      Alert.alert("Error", "Failed to delete alert. Please try again.");
+    }
   }
 
   function renderItem({ item }: { item: AlertModel }) {
-    const config = ALERT_TYPE_CONFIG[item.type];
     return (
-      <Pressable
-        style={({ pressed }) => [styles.card, pressed && { opacity: 0.95 }]}
+      <SwipeableAlertCard
+        item={item}
+        styles={styles}
         onPress={() => router.push(`/stock/${item.symbol}`)}
-        onLongPress={() => onDelete(item)}
-      >
-        <View style={styles.cardLeft}>
-          <View style={styles.iconWrap}>
-            <Text style={styles.iconText}>{item.symbol.charAt(0)}</Text>
-          </View>
-          <View style={styles.cardInfo}>
-            <View style={styles.symbolRow}>
-              <Text style={styles.symbol}>{item.symbol}</Text>
-              <View style={[styles.typeBadge, { backgroundColor: config.bg }]}>
-                <Text style={[styles.typeText, { color: config.color }]}>{config.label}</Text>
-              </View>
-            </View>
-            <Text style={styles.description}>{item.description} · {timeAgo(item.createdAt)}</Text>
-          </View>
-        </View>
-        <Switch
-          value={item.isActive}
-          onValueChange={(val) => onToggle(item.id, val)}
-          trackColor={{ false: Colors.divider, true: Colors.successLight }}
-          thumbColor={item.isActive ? Colors.success : Colors.textTertiary}
-        />
-      </Pressable>
+        onToggle={onToggle}
+        onDelete={() => onSwipeDelete(item)}
+      />
     );
   }
 
@@ -227,7 +214,7 @@ export default function AlertsScreen() {
             renderItem={renderItem}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} colors={[Colors.accent]} />}
             ListEmptyComponent={
               <View style={styles.noMatchWrap}>
                 <Text style={styles.noMatchText}>No alerts match your filters.</Text>
@@ -245,7 +232,101 @@ export default function AlertsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const DELETE_BTN_WIDTH = 80;
+
+function SwipeableAlertCard({
+  item,
+  styles,
+  onPress,
+  onToggle,
+  onDelete,
+}: {
+  item: AlertModel;
+  styles: ReturnType<typeof createStyles>;
+  onPress: () => void;
+  onToggle: (id: string, val: boolean) => void;
+  onDelete: () => void;
+}) {
+  const swipeRef = useRef<Swipeable>(null);
+  const config = ALERT_TYPE_CONFIG[item.type];
+
+  function renderRightActions(
+    _progress: Animated.AnimatedInterpolation<number>,
+    dragX: Animated.AnimatedInterpolation<number>,
+  ) {
+    const scale = dragX.interpolate({
+      inputRange: [-DELETE_BTN_WIDTH, 0],
+      outputRange: [1, 0.5],
+      extrapolate: "clamp",
+    });
+    return (
+      <Pressable
+        style={styles.deleteBtn}
+        onPress={() => {
+          swipeRef.current?.close();
+          onDelete();
+        }}
+      >
+        <Animated.View style={{ alignItems: "center", gap: 4, transform: [{ scale }] }}>
+          <Ionicons name="trash-outline" size={22} color={Colors.white} />
+          <Text style={styles.deleteBtnText}>Delete</Text>
+        </Animated.View>
+      </Pressable>
+    );
+  }
+
+  return (
+    <View style={styles.swipeRow}>
+      <Swipeable
+        ref={swipeRef}
+        renderRightActions={renderRightActions}
+        rightThreshold={DELETE_BTN_WIDTH / 2}
+        friction={2}
+        overshootFriction={8}
+        onSwipeableOpen={(direction) => {
+          if (direction === "right") {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
+        }}
+      >
+        <Pressable
+          style={({ pressed }) => [styles.card, pressed && { opacity: 0.95 }]}
+          onPress={onPress}
+          onLongPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            Alert.alert("Delete Alert", `Remove ${item.symbol} ${item.description}?`, [
+              { text: "Cancel", style: "cancel" },
+              { text: "Delete", style: "destructive", onPress: onDelete },
+            ]);
+          }}
+        >
+          <View style={styles.cardLeft}>
+            <View style={styles.iconWrap}>
+              <Text style={styles.iconText}>{item.symbol.charAt(0)}</Text>
+            </View>
+            <View style={styles.cardInfo}>
+              <View style={styles.symbolRow}>
+                <Text style={styles.symbol}>{item.symbol}</Text>
+                <View style={[styles.typeBadge, { backgroundColor: config.bg }]}>
+                  <Text style={[styles.typeText, { color: config.color }]}>{config.label}</Text>
+                </View>
+              </View>
+              <Text style={styles.description}>{item.description} · {timeAgo(item.createdAt)}</Text>
+            </View>
+          </View>
+          <Switch
+            value={item.isActive}
+            onValueChange={(val) => onToggle(item.id, val)}
+            trackColor={{ false: Colors.divider, true: Colors.successLight }}
+            thumbColor={item.isActive ? Colors.success : Colors.textTertiary}
+          />
+        </Pressable>
+      </Swipeable>
+    </View>
+  );
+}
+
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
 
   header: {
@@ -276,8 +357,7 @@ const styles = StyleSheet.create({
 
   card: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    backgroundColor: Colors.card, borderRadius: 18, padding: 16, marginBottom: 10,
-    shadowColor: Colors.shadow, shadowOpacity: 0.03, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1,
+    backgroundColor: Colors.card, borderRadius: 18, padding: 16,
   },
   cardLeft: { flexDirection: "row", alignItems: "center", flex: 1, marginRight: 12 },
   iconWrap: {
@@ -292,6 +372,19 @@ const styles = StyleSheet.create({
   typeText: { fontSize: 10, fontFamily: Fonts.bold, letterSpacing: 0.5 },
   description: { marginTop: 4, fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.medium },
 
+  swipeRow: {
+    marginBottom: 10,
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+  deleteBtn: {
+    width: DELETE_BTN_WIDTH,
+    backgroundColor: Colors.danger,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deleteBtnText: { color: Colors.white, fontSize: 12, fontFamily: Fonts.bold },
+
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
 
   emptyWrap: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40, gap: 8 },
@@ -305,7 +398,7 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
   modalSheet: {
-    backgroundColor: Colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    backgroundColor: Colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12, paddingBottom: 40,
     position: "absolute", bottom: 0, left: 0, right: 0,
   },

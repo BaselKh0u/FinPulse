@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -21,6 +21,8 @@ import {
   TrendingStock,
 } from "@/services/market.service";
 import { Colors, Fonts } from "@/theme";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
+import { useTheme } from "@/stores/theme.store";
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -48,16 +50,27 @@ function getMoodGradient(score: number): string {
   return Colors.dangerLight;
 }
 
+type NewsTab = "all" | "positive" | "neutral" | "negative";
+
 export default function MarketScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
+
   const [data, setData] = useState<MarketData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<"all" | "positive" | "negative">("all");
+  const [activeTab, setActiveTab] = useState<NewsTab>("all");
+  const [cs, setCs] = useState(getCurrencySymbol());
+  useEffect(() => subscribeCurrency(() => setCs(getCurrencySymbol())), []);
 
   const load = useCallback(async () => {
-    const d = await getMarketData();
-    setData(d);
+    try {
+      const d = await getMarketData();
+      setData(d);
+    } catch {
+      // Market data load failed silently
+    }
   }, []);
 
   useEffect(() => {
@@ -89,16 +102,31 @@ export default function MarketScreen() {
   const gainers = data.movers.filter((m) => m.direction === "up");
   const losers = data.movers.filter((m) => m.direction === "down");
 
+  function openNewsDetail(item: MarketNewsItem) {
+    router.push({
+      pathname: "/news/detail",
+      params: {
+        title: item.title,
+        summary: item.summary,
+        source: item.source,
+        publishedAt: item.publishedAt,
+        sentiment: item.sentiment,
+        sentimentScore: String(item.sentimentScore),
+        symbols: item.relatedSymbols.join(","),
+        url: item.url,
+      },
+    });
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <FlatList
         data={filteredNews}
         keyExtractor={(item) => item.id}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} colors={[Colors.accent]} />}
         ListHeaderComponent={
           <>
-            {/* Header */}
             <View style={styles.header}>
               <View>
                 <Text style={styles.headerTitle}>Market Pulse</Text>
@@ -110,7 +138,6 @@ export default function MarketScreen() {
               </View>
             </View>
 
-            {/* Market Mood */}
             <View style={[styles.moodCard, { borderLeftColor: getMoodColor(data.mood.score) }]}>
               <View style={styles.moodLeft}>
                 <Text style={styles.moodLabel}>Market Sentiment</Text>
@@ -152,7 +179,6 @@ export default function MarketScreen() {
               </View>
             </View>
 
-            {/* Trending Stocks */}
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Trending Now</Text>
               <View style={styles.mentionHint}>
@@ -162,22 +188,20 @@ export default function MarketScreen() {
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.trendingScroll}>
               {data.trending.map((stock) => (
-                <TrendingCard key={stock.symbol} stock={stock} onPress={() => router.push(`/stock/${stock.symbol}`)} />
+                <TrendingCard key={stock.symbol} stock={stock} cs={cs} styles={styles} onPress={() => router.push(`/stock/${stock.symbol}`)} />
               ))}
             </ScrollView>
 
-            {/* Source Breakdown */}
             <Text style={styles.sectionTitle}>Sentiment by Source</Text>
             <View style={styles.sourcesCard}>
               {data.sources.map((src, idx) => (
                 <View key={src.source}>
-                  <SourceRow source={src} />
+                  <SourceRow source={src} styles={styles} />
                   {idx < data.sources.length - 1 && <View style={styles.sourceDivider} />}
                 </View>
               ))}
             </View>
 
-            {/* Sentiment Movers */}
             <Text style={styles.sectionTitle}>Sentiment Movers</Text>
             <View style={styles.moversRow}>
               <View style={styles.moversCol}>
@@ -185,18 +209,17 @@ export default function MarketScreen() {
                   <Ionicons name="trending-up" size={16} color={Colors.success} />
                   <Text style={styles.moversHeaderText}>Most Bullish</Text>
                 </View>
-                {gainers.map((m) => <MoverItem key={m.symbol} mover={m} onPress={() => router.push(`/stock/${m.symbol}`)} />)}
+                {gainers.map((m) => <MoverItem key={m.symbol} mover={m} styles={styles} onPress={() => router.push(`/stock/${m.symbol}`)} />)}
               </View>
               <View style={styles.moversCol}>
                 <View style={styles.moversHeader}>
                   <Ionicons name="trending-down" size={16} color={Colors.danger} />
                   <Text style={styles.moversHeaderText}>Most Bearish</Text>
                 </View>
-                {losers.map((m) => <MoverItem key={m.symbol} mover={m} onPress={() => router.push(`/stock/${m.symbol}`)} />)}
+                {losers.map((m) => <MoverItem key={m.symbol} mover={m} styles={styles} onPress={() => router.push(`/stock/${m.symbol}`)} />)}
               </View>
             </View>
 
-            {/* News Filter Tabs */}
             <View style={styles.newsHeaderRow}>
               <Text style={styles.sectionTitle}>Latest News</Text>
             </View>
@@ -204,6 +227,7 @@ export default function MarketScreen() {
               {([
                 { key: "all" as const, label: "All" },
                 { key: "positive" as const, label: "Positive" },
+                { key: "neutral" as const, label: "Neutral" },
                 { key: "negative" as const, label: "Negative" },
               ]).map((t) => (
                 <Pressable
@@ -217,7 +241,7 @@ export default function MarketScreen() {
             </View>
           </>
         }
-        renderItem={({ item }) => <NewsCard item={item} onPress={() => router.push(`/stock/${item.relatedSymbols[0]}`)} />}
+        renderItem={({ item }) => <NewsCard item={item} styles={styles} onPress={() => openNewsDetail(item)} />}
         ListEmptyComponent={
           <View style={styles.emptyWrap}>
             <Ionicons name="newspaper-outline" size={48} color={Colors.borderLight} />
@@ -230,14 +254,11 @@ export default function MarketScreen() {
   );
 }
 
-/* ─── Sub-components ─── */
+type Styles = ReturnType<typeof createStyles>;
 
-function TrendingCard({ stock, onPress }: { stock: TrendingStock; onPress: () => void }) {
+function TrendingCard({ stock, cs, styles, onPress }: { stock: TrendingStock; cs: string; styles: Styles; onPress: () => void }) {
   const isUp = stock.changePercent >= 0;
-  const sentColor = stock.sentimentLabel === "bullish" ? Colors.success
-    : stock.sentimentLabel === "bearish" ? Colors.danger : Colors.textTertiary;
-  const sentBg = stock.sentimentLabel === "bullish" ? Colors.successLight
-    : stock.sentimentLabel === "bearish" ? Colors.dangerLight : Colors.iconBackground;
+  const dotColor = isUp ? Colors.success : Colors.danger;
 
   return (
     <Pressable style={({ pressed }) => [styles.trendCard, pressed && { opacity: 0.92 }]} onPress={onPress}>
@@ -245,11 +266,11 @@ function TrendingCard({ stock, onPress }: { stock: TrendingStock; onPress: () =>
         <View style={styles.trendIconWrap}>
           <Text style={styles.trendIcon}>{stock.symbol.charAt(0)}</Text>
         </View>
-        <View style={[styles.trendSentDot, { backgroundColor: sentColor }]} />
+        <View style={[styles.trendSentDot, { backgroundColor: dotColor }]} />
       </View>
       <Text style={styles.trendSymbol}>{stock.symbol}</Text>
       <Text style={styles.trendName} numberOfLines={1}>{stock.name}</Text>
-      <Text style={styles.trendPrice}>${stock.price.toFixed(2)}</Text>
+      <Text style={styles.trendPrice}>{cs}{convertPrice(stock.price).toFixed(2)}</Text>
       <View style={[styles.trendChangePill, { backgroundColor: isUp ? Colors.successLight : Colors.dangerLight }]}>
         <Text style={[styles.trendChangeText, { color: isUp ? Colors.success : Colors.danger }]}>
           {isUp ? "+" : ""}{stock.changePercent.toFixed(2)}%
@@ -263,7 +284,7 @@ function TrendingCard({ stock, onPress }: { stock: TrendingStock; onPress: () =>
   );
 }
 
-function SourceRow({ source }: { source: SourceSentiment }) {
+function SourceRow({ source, styles }: { source: SourceSentiment; styles: Styles }) {
   const total = source.positive + source.neutral + source.negative || 1;
   return (
     <View style={styles.sourceRow}>
@@ -292,7 +313,7 @@ function SourceRow({ source }: { source: SourceSentiment }) {
   );
 }
 
-function MoverItem({ mover, onPress }: { mover: SentimentMover; onPress: () => void }) {
+function MoverItem({ mover, styles, onPress }: { mover: SentimentMover; styles: Styles; onPress: () => void }) {
   const isUp = mover.direction === "up";
   return (
     <Pressable style={({ pressed }) => [styles.moverItem, pressed && { opacity: 0.85 }]} onPress={onPress}>
@@ -310,7 +331,7 @@ function MoverItem({ mover, onPress }: { mover: SentimentMover; onPress: () => v
   );
 }
 
-function NewsCard({ item, onPress }: { item: MarketNewsItem; onPress: () => void }) {
+function NewsCard({ item, styles, onPress }: { item: MarketNewsItem; styles: Styles; onPress: () => void }) {
   const sentColor = item.sentiment === "positive" ? Colors.success
     : item.sentiment === "negative" ? Colors.danger : Colors.textTertiary;
   const sentBg = item.sentiment === "positive" ? Colors.successLight
@@ -346,9 +367,7 @@ function NewsCard({ item, onPress }: { item: MarketNewsItem; onPress: () => void
   );
 }
 
-/* ─── Styles ─── */
-
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   listContent: { paddingBottom: 30 },
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -380,13 +399,9 @@ const styles = StyleSheet.create({
   moodBadgeText: { fontSize: 14, fontFamily: Fonts.bold },
   moodChangeRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   moodChangeText: { fontSize: 12, fontFamily: Fonts.medium },
-  moodBar: {
-    height: 8, backgroundColor: Colors.iconBackground, borderRadius: 4, overflow: "hidden",
-  },
+  moodBar: { height: 8, backgroundColor: Colors.iconBackground, borderRadius: 4, overflow: "hidden" },
   moodBarFill: { height: 8, borderRadius: 4 },
-  moodBarLabels: {
-    flexDirection: "row", justifyContent: "space-between", marginTop: 6,
-  },
+  moodBarLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
   moodBarLabel: { fontSize: 11, color: Colors.textTertiary, fontFamily: Fonts.medium },
 
   sectionHeader: {
@@ -454,13 +469,8 @@ const styles = StyleSheet.create({
   moverChangeText: { fontSize: 12, fontFamily: Fonts.bold },
 
   newsHeaderRow: { marginBottom: 4 },
-  newsTabs: {
-    flexDirection: "row", gap: 8, paddingHorizontal: 20, marginBottom: 16,
-  },
-  newsTab: {
-    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 10,
-    backgroundColor: Colors.iconBackground,
-  },
+  newsTabs: { flexDirection: "row", gap: 8, paddingHorizontal: 20, marginBottom: 16 },
+  newsTab: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 10, backgroundColor: Colors.iconBackground },
   newsTabActive: { backgroundColor: Colors.primary },
   newsTabText: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.semiBold },
   newsTabTextActive: { color: Colors.white, fontFamily: Fonts.bold },
@@ -483,9 +493,7 @@ const styles = StyleSheet.create({
   newsSentText: { fontSize: 12, fontFamily: Fonts.bold },
   newsSentScore: { fontSize: 11, fontFamily: Fonts.semiBold },
   newsSymbols: { flexDirection: "row", gap: 6 },
-  newsSymbolChip: {
-    backgroundColor: Colors.iconBackground, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
-  },
+  newsSymbolChip: { backgroundColor: Colors.iconBackground, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   newsSymbolText: { fontSize: 11, color: Colors.accent, fontFamily: Fonts.bold },
 
   emptyWrap: { alignItems: "center", paddingVertical: 40, gap: 10 },

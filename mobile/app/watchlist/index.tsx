@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -11,14 +11,22 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { getStocks, removeStock } from "@/services/stock.service";
 import { getMarketData, TrendingStock } from "@/services/market.service";
 import { Stock } from "@/models/Stock";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
+import * as Haptics from "expo-haptics";
 
 export default function WatchlistScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
+
+  const [cs, setCs] = useState(getCurrencySymbol());
+  useEffect(() => subscribeCurrency(() => setCs(getCurrencySymbol())), []);
 
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [trending, setTrending] = useState<TrendingStock[]>([]);
@@ -26,9 +34,13 @@ export default function WatchlistScreen() {
   const [refreshing, setRefreshing] = useState(false);
 
   const loadStocks = useCallback(async () => {
-    const [data, marketData] = await Promise.all([getStocks(), getMarketData()]);
-    setStocks(data);
-    setTrending(marketData.trending);
+    try {
+      const [data, marketData] = await Promise.all([getStocks(), getMarketData()]);
+      setStocks(data);
+      setTrending(marketData.trending);
+    } catch {
+      // Watchlist load failed silently
+    }
   }, []);
 
   useEffect(() => {
@@ -42,6 +54,8 @@ export default function WatchlistScreen() {
     })();
   }, [loadStocks]);
 
+  useFocusEffect(useCallback(() => { loadStocks(); }, [loadStocks]));
+
   const onRefresh = async () => {
     try {
       setRefreshing(true);
@@ -52,6 +66,7 @@ export default function WatchlistScreen() {
   };
 
   function confirmRemove(symbol: string) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Alert.alert(
       "Remove from Watchlist",
       `Are you sure you want to remove ${symbol}?`,
@@ -61,6 +76,7 @@ export default function WatchlistScreen() {
           text: "Remove",
           style: "destructive",
           onPress: async () => {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             await removeStock(symbol);
             await loadStocks();
           },
@@ -87,7 +103,7 @@ export default function WatchlistScreen() {
         </View>
 
         <View style={styles.right}>
-          <Text style={styles.price}>${item.price.toFixed(2)}</Text>
+          <Text style={styles.price}>{cs}{convertPrice(item.price).toFixed(2)}</Text>
           <View style={[styles.changeBadge, isUp ? styles.badgeUp : styles.badgeDown]}>
             <Text style={[styles.changeText, isUp ? styles.textUp : styles.textDown]}>
               {isUp ? "+" : ""}{item.changePercent.toFixed(2)}%
@@ -149,7 +165,7 @@ export default function WatchlistScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.accent} colors={[Colors.accent]} />
           }
           ListHeaderComponent={
             stocks.length > 0 ? (
@@ -168,6 +184,8 @@ export default function WatchlistScreen() {
 }
 
 function WatchlistInsights({ stocks, trending }: { stocks: Stock[]; trending: TrendingStock[] }) {
+  const { isDark } = useTheme();
+  const insightStyles = useMemo(createInsightStyles, [isDark]);
   const watchedSymbols = new Set(stocks.map((s) => s.symbol.toUpperCase()));
   const matched = trending.filter((t) => watchedSymbols.has(t.symbol.toUpperCase()));
 
@@ -221,7 +239,7 @@ function WatchlistInsights({ stocks, trending }: { stocks: Stock[]; trending: Tr
   );
 }
 
-const insightStyles = StyleSheet.create({
+const createInsightStyles = () => StyleSheet.create({
   card: {
     backgroundColor: Colors.card, borderRadius: 18, padding: 16, marginBottom: 16,
     shadowColor: Colors.shadow, shadowOpacity: 0.04, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 2,
@@ -238,7 +256,7 @@ const insightStyles = StyleSheet.create({
   topChange: { fontSize: 13, fontFamily: Fonts.bold, marginLeft: 4 },
 });
 
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
 
   header: {

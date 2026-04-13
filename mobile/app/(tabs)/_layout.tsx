@@ -1,22 +1,28 @@
+import { useMemo } from "react";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
 
 export default function TabsLayout() {
+  const { isDark } = useTheme();
+
+  const tabBarStyle = useMemo(() => ({
+    backgroundColor: isDark ? Colors.card : Colors.white,
+    borderTopColor: Colors.divider,
+    borderTopWidth: 1,
+    height: 88,
+    paddingBottom: 28,
+    paddingTop: 8,
+  }), [isDark]);
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: Colors.tabActive,
         tabBarInactiveTintColor: Colors.tabInactive,
-        tabBarStyle: {
-          backgroundColor: Colors.white,
-          borderTopColor: Colors.divider,
-          borderTopWidth: 1,
-          height: 88,
-          paddingBottom: 28,
-          paddingTop: 8,
-        },
+        tabBarStyle,
         tabBarLabelStyle: {
           fontFamily: Fonts.medium,
           fontSize: 11,
