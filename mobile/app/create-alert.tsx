@@ -12,12 +12,16 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { AlertType, ALERT_TYPE_CONFIG } from "@/models/Alert";
-import { createAlert } from "@/services/alert.service";
+import { createAlert, getAlerts } from "@/services/alert.service";
 import { searchStocks } from "@/services/stock.service";
+import { scheduleAlertNotification } from "@/services/notification.service";
 import { Stock } from "@/models/Stock";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
+import * as Haptics from "expo-haptics";
 
 const ALERT_TYPES: { key: AlertType; icon: string; title: string; sub: string }[] = [
   { key: "price_above", icon: "trending-up", title: "Price Above", sub: "Notify when price rises above target" },
@@ -28,12 +32,23 @@ const ALERT_TYPES: { key: AlertType; icon: string; title: string; sub: string }[
 
 export default function CreateAlertScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ symbol?: string; stockName?: string; stockPrice?: string }>();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [cs, setCs] = useState(getCurrencySymbol());
+  useEffect(() => subscribeCurrency(() => setCs(getCurrencySymbol())), []);
+
+  const preselected = !!(params.symbol && params.stockName);
+  const [step, setStep] = useState<1 | 2 | 3>(preselected ? 2 : 1);
 
   const [stockQuery, setStockQuery] = useState("");
   const [stockResults, setStockResults] = useState<Stock[]>([]);
-  const [selectedStock, setSelectedStock] = useState<Stock | null>(null);
+  const [selectedStock, setSelectedStock] = useState<Stock | null>(
+    preselected
+      ? { symbol: params.symbol!, name: params.stockName!, price: parseFloat(params.stockPrice ?? "0"), change: 0, changePercent: 0 }
+      : null
+  );
 
   const [selectedType, setSelectedType] = useState<AlertType | null>(null);
 
@@ -41,11 +56,12 @@ export default function CreateAlertScreen() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (preselected) return;
     (async () => {
       const data = await searchStocks(stockQuery);
       setStockResults(data);
     })();
-  }, [stockQuery]);
+  }, [stockQuery, preselected]);
 
   const needsTarget = selectedType === "price_above" || selectedType === "price_below" || selectedType === "volatility";
 
@@ -58,8 +74,8 @@ export default function CreateAlertScreen() {
   function buildDescription(): string {
     const val = Number(targetValue);
     switch (selectedType) {
-      case "price_above": return `Above $${val.toFixed(2)}`;
-      case "price_below": return `Below $${val.toFixed(2)}`;
+      case "price_above": return `Above ${cs}${convertPrice(val).toFixed(2)}`;
+      case "price_below": return `Below ${cs}${convertPrice(val).toFixed(2)}`;
       case "volatility": return `Change > ${val}%`;
       case "earnings": return "Report Released";
       default: return "";
@@ -70,14 +86,38 @@ export default function CreateAlertScreen() {
     if (!canSave || !selectedStock || !selectedType) return;
     setSaving(true);
     try {
+      const existing = await getAlerts();
+      const duplicate = existing.find(
+        (a) => a.symbol.toUpperCase() === selectedStock.symbol.toUpperCase() && a.type === selectedType,
+      );
+      if (duplicate) {
+        Alert.alert(
+          "Duplicate Alert",
+          `You already have a "${ALERT_TYPE_CONFIG[selectedType].label}" alert for ${selectedStock.symbol}.`,
+        );
+        setSaving(false);
+        return;
+      }
+
+      const desc = buildDescription();
       await createAlert({
         symbol: selectedStock.symbol,
         type: selectedType,
         targetPrice: selectedType === "price_above" || selectedType === "price_below" ? Number(targetValue) : undefined,
         threshold: selectedType === "volatility" ? Number(targetValue) : undefined,
-        description: buildDescription(),
+        description: desc,
         isActive: true,
       });
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      try {
+        const typeLabel = ALERT_TYPE_CONFIG[selectedType].label;
+        await scheduleAlertNotification(selectedStock.symbol, typeLabel, desc);
+      } catch {
+        // Notification scheduling can fail in Expo Go — ignore silently
+      }
+
       Alert.alert("Alert Created", `You'll be notified about ${selectedStock.symbol}.`, [
         { text: "OK", onPress: () => router.back() },
       ]);
@@ -138,7 +178,7 @@ export default function CreateAlertScreen() {
                   <Text style={styles.stockSymbol}>{stock.symbol}</Text>
                   <Text style={styles.stockName}>{stock.name}</Text>
                 </View>
-                <Text style={styles.stockPrice}>${stock.price.toFixed(2)}</Text>
+                <Text style={styles.stockPrice}>{cs}{convertPrice(stock.price).toFixed(2)}</Text>
                 {chosen && <Ionicons name="checkmark-circle" size={22} color={Colors.accent} style={{ marginLeft: 8 }} />}
               </Pressable>
             );
@@ -229,14 +269,14 @@ export default function CreateAlertScreen() {
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Current Price</Text>
-            <Text style={styles.summaryValue}>${selectedStock?.price.toFixed(2)}</Text>
+            <Text style={styles.summaryValue}>{cs}{convertPrice(selectedStock?.price ?? 0).toFixed(2)}</Text>
           </View>
         </View>
 
         {needsTarget && (
           <View style={styles.inputSection}>
             <Text style={styles.inputLabel}>
-              {selectedType === "volatility" ? "Change Threshold (%)" : "Target Price ($)"}
+              {selectedType === "volatility" ? "Change Threshold (%)" : `Target Price (${cs})`}
             </Text>
             <TextInput
               style={styles.targetInput}
@@ -310,7 +350,7 @@ export default function CreateAlertScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   flex: { flex: 1 },
 

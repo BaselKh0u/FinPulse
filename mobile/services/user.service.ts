@@ -5,7 +5,7 @@ const mockUser: User = {
   id: "mock-user-1",
   firstName: "Basel",
   lastName: "Kh",
-  email: "basel@finpulse.io",
+  email: "basel@example.com",
   phone: "+972 54-XXX-XXXX",
   joinedAt: "2025-09-01T00:00:00Z",
   isVerified: true,

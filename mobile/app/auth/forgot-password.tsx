@@ -14,10 +14,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { forgotPassword } from "@/services/auth.service";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function ForgotPasswordScreen() {
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
   const router = useRouter();
 
   const [email, setEmail] = useState("");
@@ -97,8 +100,8 @@ export default function ForgotPasswordScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
+const createStyles = () => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1, paddingHorizontal: 22, paddingTop: 8 },
   back: { width: 42, height: 42, justifyContent: "center" },
 
@@ -130,7 +133,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 15,
     color: Colors.textPrimary,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.card,
     fontFamily: Fonts.regular,
   },
 

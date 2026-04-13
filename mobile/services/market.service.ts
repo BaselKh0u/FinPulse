@@ -64,10 +64,10 @@ const mockMarketData: MarketData = {
   },
   trending: [
     { symbol: "NVDA", name: "Nvidia Corp.", price: 460.15, changePercent: 5.85, mentions: 31200, sentimentScore: 0.91, sentimentLabel: "bullish" },
-    { symbol: "TSLA", name: "Tesla Inc.", price: 235.40, changePercent: -1.20, mentions: 24800, sentimentScore: 0.34, sentimentLabel: "neutral" },
+    { symbol: "TSLA", name: "Tesla Inc.", price: 235.40, changePercent: -1.20, mentions: 24800, sentimentScore: 0.34, sentimentLabel: "bearish" },
     { symbol: "AAPL", name: "Apple Inc.", price: 178.35, changePercent: 2.45, mentions: 12450, sentimentScore: 0.72, sentimentLabel: "bullish" },
     { symbol: "META", name: "Meta Platforms", price: 298.50, changePercent: 1.10, mentions: 8900, sentimentScore: 0.61, sentimentLabel: "bullish" },
-    { symbol: "AMZN", name: "Amazon.com", price: 145.80, changePercent: -0.45, mentions: 7200, sentimentScore: 0.48, sentimentLabel: "neutral" },
+    { symbol: "AMZN", name: "Amazon.com", price: 145.80, changePercent: -0.45, mentions: 7200, sentimentScore: 0.48, sentimentLabel: "bearish" },
     { symbol: "GOOGL", name: "Alphabet Inc.", price: 135.20, changePercent: 0.95, mentions: 6800, sentimentScore: 0.55, sentimentLabel: "bullish" },
   ],
   sources: [

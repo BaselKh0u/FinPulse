@@ -1,4 +1,9 @@
-import { useMemo, useState } from "react";
+import { login } from "@/services/auth.service";
+import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -10,21 +15,69 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { login } from "@/services/auth.service";
-import { Colors } from "@/theme";
-import { Fonts } from "@/theme";
+import * as LocalAuthentication from "expo-local-authentication";
+import * as Haptics from "expo-haptics";
+import { isBiometricEnabled } from "@/stores/biometric.store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricType, setBiometricType] = useState<string>("Biometrics");
+  const passwordRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    (async () => {
+      const compatible = await LocalAuthentication.hasHardwareAsync();
+      const enrolled = await LocalAuthentication.isEnrolledAsync();
+      if (compatible && enrolled) {
+        setBiometricAvailable(true);
+        const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+        if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+          setBiometricType("Face ID");
+        } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+          setBiometricType("Fingerprint");
+        }
+        const userEnabled = await isBiometricEnabled();
+        if (userEnabled) {
+          const result = await LocalAuthentication.authenticateAsync({
+            promptMessage: "Log in to FinPulse",
+            fallbackLabel: "Use passcode",
+            disableDeviceFallback: false,
+          });
+          if (result.success) {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            router.replace("/(tabs)");
+          }
+        }
+      }
+    })();
+  }, []);
+
+  async function onBiometricLogin() {
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: `Log in to FinPulse`,
+      fallbackLabel: "Use passcode",
+      disableDeviceFallback: false,
+    });
+
+    if (result.success) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace("/(tabs)");
+    } else if (result.error === "user_cancel") {
+      // User cancelled, do nothing
+    } else {
+      Alert.alert("Authentication Failed", "Please try again or use your email and password.");
+    }
+  }
 
   const canSubmit = useMemo(
     () => EMAIL_REGEX.test(email.trim()) && password.trim().length >= 6 && !loading,
@@ -71,11 +124,13 @@ export default function LoginScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="next"
+            onSubmitEditing={() => passwordRef.current?.focus()}
           />
 
           <Text style={[styles.label, { marginTop: 14 }]}>Password</Text>
           <View style={styles.passwordWrap}>
             <TextInput
+              ref={passwordRef}
               style={[styles.input, styles.passwordInput]}
               placeholder="••••••••"
               placeholderTextColor={Colors.placeholder}
@@ -120,6 +175,27 @@ export default function LoginScreen() {
               {loading ? "Logging in..." : "Login"}
             </Text>
           </Pressable>
+
+          {biometricAvailable && (
+            <>
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+              <Pressable
+                onPress={onBiometricLogin}
+                style={({ pressed }) => [styles.biometricBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Ionicons
+                  name={biometricType === "Face ID" ? "scan-outline" : "finger-print-outline"}
+                  size={22}
+                  color={Colors.accent}
+                />
+                <Text style={styles.biometricText}>Login with {biometricType}</Text>
+              </Pressable>
+            </>
+          )}
         </View>
 
         <View style={styles.footer}>
@@ -133,8 +209,8 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
+const createStyles = () => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1, paddingHorizontal: 22 },
 
   logoWrap: { alignItems: "center", marginTop: 24, marginBottom: 24 },
@@ -174,7 +250,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 15,
     color: Colors.textPrimary,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.card,
     fontFamily: Fonts.regular,
   },
 
@@ -215,6 +291,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: Fonts.bold,
   },
+
+  dividerRow: { flexDirection: "row", alignItems: "center", marginTop: 20, gap: 12 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  dividerText: { fontSize: 13, color: Colors.textTertiary, fontFamily: Fonts.medium },
+  biometricBtn: {
+    marginTop: 16, height: 54, borderRadius: 16, borderWidth: 1.5, borderColor: Colors.border,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
+    backgroundColor: Colors.card,
+  },
+  biometricText: { fontSize: 15, color: Colors.accent, fontFamily: Fonts.bold },
 
   footer: {
     marginTop: "auto",

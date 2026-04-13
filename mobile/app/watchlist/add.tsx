@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -14,9 +14,16 @@ import { useRouter } from "expo-router";
 import { addStock, getStocks, searchStocks } from "@/services/stock.service";
 import { Stock } from "@/models/Stock";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
 
 export default function AddStockScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
+
+  const [cs, setCs] = useState(getCurrencySymbol());
+  useEffect(() => subscribeCurrency(() => setCs(getCurrencySymbol())), []);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Stock[]>([]);
@@ -33,6 +40,8 @@ export default function AddStockScreen() {
         ]);
         setResults(all);
         setWatchlistSymbols(new Set(watchlist.map((s) => s.symbol.toUpperCase())));
+      } catch {
+        // Initial load failed silently
       } finally {
         setLoading(false);
       }
@@ -41,8 +50,12 @@ export default function AddStockScreen() {
 
   useEffect(() => {
     (async () => {
-      const data = await searchStocks(query);
-      setResults(data);
+      try {
+        const data = await searchStocks(query);
+        setResults(data);
+      } catch {
+        // Search failed silently
+      }
     })();
   }, [query]);
 
@@ -68,7 +81,7 @@ export default function AddStockScreen() {
         </View>
 
         <View style={styles.priceCol}>
-          <Text style={styles.price}>${item.price.toFixed(2)}</Text>
+          <Text style={styles.price}>{cs}{convertPrice(item.price).toFixed(2)}</Text>
           <Text style={[styles.changeText, isUp ? styles.textUp : styles.textDown]}>
             {isUp ? "+" : ""}{item.changePercent.toFixed(2)}%
           </Text>
@@ -143,7 +156,7 @@ export default function AddStockScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
 
   header: {
