@@ -1,22 +1,58 @@
+import { getAccessToken } from "@/stores/auth.storage";
+
 const BASE_URL = "http://localhost:5000";
 
 export const USE_MOCK = true;
+
+async function parseErrorMessage(response: Response): Promise<string> {
+  const fallback = `Something went wrong (${response.status})`;
+  try {
+    const data = (await response.json()) as Record<string, unknown>;
+    if (typeof data.message === "string" && data.message.trim()) return data.message;
+    if (typeof data.error === "string" && data.error.trim()) return data.error;
+    const errors = data.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      const first = errors[0] as Record<string, unknown>;
+      if (typeof first?.message === "string") return first.message;
+    }
+  } catch {
+    // not JSON
+  }
+  if (response.status === 401) return "Invalid email or password.";
+  if (response.status === 403) return "You don't have permission to do that.";
+  if (response.status === 404) return "Not found.";
+  if (response.status >= 500) return "Server error. Please try again later.";
+  return fallback;
+}
+
+const AUTH_ROUTES_WITHOUT_TOKEN = new Set([
+  "/auth/login",
+  "/auth/register",
+  "/auth/forgot-password",
+]);
 
 export async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const skipAuth = AUTH_ROUTES_WITHOUT_TOKEN.has(endpoint.split("?")[0]);
+  const token = skipAuth ? null : await getAccessToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> | undefined),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
   const response = await fetch(`${BASE_URL}${endpoint}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
     ...options,
+    headers,
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    throw new Error(await parseErrorMessage(response));
   }
 
-  return response.json();
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }

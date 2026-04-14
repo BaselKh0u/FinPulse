@@ -221,7 +221,9 @@ export default function AlertsScreen() {
               </View>
             }
             ListFooterComponent={
-              filtered.length > 0 ? <Text style={styles.footerText}>You've reached the end of your alerts.</Text> : null
+              filtered.length > 0 ? (
+                <Text style={styles.footerText}>{"You've reached the end of your alerts."}</Text>
+              ) : null
             }
           />
         </>

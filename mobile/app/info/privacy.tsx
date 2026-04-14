@@ -34,7 +34,9 @@ export default function PrivacyScreen() {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
         <Text style={styles.updated}>Last updated: March 2026</Text>
         <Text style={styles.intro}>
-          FinPulse ("we", "our", "us") is committed to protecting your privacy. This policy explains how we collect, use, and safeguard your information when you use our mobile application.
+          {
+            'FinPulse ("we", "our", "us") is committed to protecting your privacy. This policy explains how we collect, use, and safeguard your information when you use our mobile application.'
+          }
         </Text>
 
         {SECTIONS.map((s, idx) => (
