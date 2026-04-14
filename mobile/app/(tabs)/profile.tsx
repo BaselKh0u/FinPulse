@@ -35,7 +35,18 @@ import { useTheme } from "@/stores/theme.store";
 import { setCurrency as setGlobalCurrency } from "@/stores/currency.store";
 import { setBiometricEnabled } from "@/stores/biometric.store";
 import * as LocalAuthentication from "expo-local-authentication";
-import { setAlertSoundEnabled, setPushEnabled } from "@/services/notification.service";
+import { authenticateBiometricFirst, biometricErrorMessage } from "@/lib/authenticateBiometrics";
+import {
+  clearBiometricReloginSession,
+  getAccessToken,
+  getStoredUserId,
+  stashSessionForBiometricRelogin,
+} from "@/stores/auth.storage";
+import {
+  registerForPushNotifications,
+  setAlertSoundEnabled,
+  setPushEnabled,
+} from "@/services/notification.service";
 import { setRefreshInterval as setGlobalRefresh } from "@/stores/refresh.store";
 
 
@@ -71,6 +82,7 @@ export default function ProfileScreen() {
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [currencyModal, setCurrencyModal] = useState(false);
   const [refreshModal, setRefreshModal] = useState(false);
+  const [biometricBusy, setBiometricBusy] = useState(false);
 
   const editScrollRef = useRef<ScrollView>(null);
 
@@ -182,25 +194,48 @@ export default function ProfileScreen() {
   }
 
   async function handleBiometricToggle(enable: boolean) {
-    if (enable) {
-      const compatible = await LocalAuthentication.hasHardwareAsync();
-      const enrolled = await LocalAuthentication.isEnrolledAsync();
-      if (!compatible || !enrolled) {
-        Alert.alert("Not Available", "Your device doesn't support biometric authentication or has none enrolled.");
-        return;
+    setBiometricBusy(true);
+    try {
+      if (enable) {
+        const compatible = await LocalAuthentication.hasHardwareAsync();
+        const enrolled = await LocalAuthentication.isEnrolledAsync();
+        if (!compatible || !enrolled) {
+          Alert.alert(
+            "Not available",
+            "This device doesn’t support biometric login, or no Face ID / fingerprint is enrolled. Set one up in system Settings."
+          );
+          return;
+        }
+        const result = await authenticateBiometricFirst(
+          "Verify your identity to enable biometric login"
+        );
+        if (!result.success) {
+          if (result.error !== "user_cancel") {
+            const msg = biometricErrorMessage(result.error);
+            if (msg) {
+              Alert.alert("Biometric verification", msg);
+            }
+          }
+          return;
+        }
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        await clearBiometricReloginSession();
       }
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: "Verify your identity to enable biometric login",
-        disableDeviceFallback: false,
-      });
-      if (!result.success) return;
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } else {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await setBiometricEnabled(enable);
+      const updated = await updatePreferences({ biometricLogin: enable });
+      setPrefs(updated);
+      if (enable) {
+        const t = await getAccessToken();
+        const u = await getStoredUserId();
+        if (t && u) await stashSessionForBiometricRelogin(t, u);
+      }
+    } catch (e) {
+      Alert.alert("Couldn’t update setting", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setBiometricBusy(false);
     }
-    await setBiometricEnabled(enable);
-    const updated = await updatePreferences({ biometricLogin: enable });
-    setPrefs(updated);
   }
 
   function onLogout() {
@@ -240,7 +275,11 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* Header */}
         <View style={styles.header}>
@@ -311,14 +350,29 @@ export default function ProfileScreen() {
         {/* Preferences Section */}
         <Text style={styles.sectionLabel}>PREFERENCES</Text>
         <View style={styles.section}>
-          <SettingsToggle icon="notifications-outline" label="Push Notifications" value={prefs.pushNotifications}
-            onToggle={async (v) => { setPushEnabled(v); await togglePref("pushNotifications", v); }} />
+          <SettingsToggle
+            icon="notifications-outline"
+            label="Push Notifications"
+            value={prefs.pushNotifications}
+            onToggle={async (v) => {
+              if (v) {
+                await registerForPushNotifications({ silent: false });
+              }
+              setPushEnabled(v);
+              await togglePref("pushNotifications", v);
+            }}
+          />
           <Divider />
           <SettingsToggle icon="volume-high-outline" label="Alert Sound" value={prefs.alertSound}
             onToggle={async (v) => { setAlertSoundEnabled(v); await togglePref("alertSound", v); }} />
           <Divider />
-          <SettingsToggle icon="finger-print-outline" label="Biometric Login" value={prefs.biometricLogin}
-            onToggle={handleBiometricToggle} />
+          <SettingsToggle
+            icon="finger-print-outline"
+            label="Biometric Login"
+            value={prefs.biometricLogin}
+            disabled={biometricBusy}
+            onToggle={handleBiometricToggle}
+          />
           <Divider />
           <SettingsToggle icon="moon-outline" label="Dark Mode" value={isDark}
             onToggle={() => { toggleDark(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }} />
@@ -480,8 +534,12 @@ function SettingsRow({ icon, label, trailing, danger, onPress }: {
   );
 }
 
-function SettingsToggle({ icon, label, value, onToggle }: {
-  icon: string; label: string; value: boolean; onToggle: (v: boolean) => void;
+function SettingsToggle({ icon, label, value, onToggle, disabled }: {
+  icon: string;
+  label: string;
+  value: boolean;
+  onToggle: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   const { isDark } = useTheme();
   const labelColor = isDark ? "#FFFFFF" : Colors.textPrimary;
@@ -493,6 +551,7 @@ function SettingsToggle({ icon, label, value, onToggle }: {
       <Text style={[styles.rowLabel, { color: labelColor }]}>{label}</Text>
       <Switch
         value={value}
+        disabled={disabled}
         onValueChange={onToggle}
         trackColor={{ false: Colors.divider, true: Colors.successLight }}
         thumbColor={value ? Colors.success : Colors.textTertiary}

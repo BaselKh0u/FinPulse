@@ -9,7 +9,10 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "FinPulse uses Face ID to sign you in securely."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -39,7 +42,24 @@
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FinPulse uses your photo library so you can choose a profile picture.",
+          "cameraPermission": "FinPulse uses the camera so you can take a profile picture."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#2C66FF",
+          "sounds": [],
+          "enableBackgroundRemoteNotifications": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

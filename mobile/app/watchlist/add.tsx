@@ -140,7 +140,7 @@ export default function AddStockScreen() {
       {!loading && results.length === 0 ? (
         <View style={styles.emptyWrap}>
           <Ionicons name="search" size={48} color={Colors.borderLight} />
-          <Text style={styles.emptyText}>No results found for "{query}"</Text>
+          <Text style={styles.emptyText}>{`No results found for "${query}"`}</Text>
         </View>
       ) : (
         <FlatList

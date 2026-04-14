@@ -21,7 +21,19 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function registerForPushNotifications(): Promise<string | null> {
+export type RegisterPushOptions = {
+  /**
+   * When true, only registers for a push token if permission is already granted — no system prompt.
+   * Use on cold start so first-time users are not asked before onboarding; call without silent after signup or from Settings.
+   */
+  silent?: boolean;
+};
+
+export async function registerForPushNotifications(
+  options: RegisterPushOptions = {}
+): Promise<string | null> {
+  const silent = options.silent === true;
+
   if (!Device.isDevice) {
     console.warn("Push notifications require a physical device.");
     return null;
@@ -31,6 +43,9 @@ export async function registerForPushNotifications(): Promise<string | null> {
   let finalStatus = existing;
 
   if (existing !== "granted") {
+    if (silent) {
+      return null;
+    }
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }

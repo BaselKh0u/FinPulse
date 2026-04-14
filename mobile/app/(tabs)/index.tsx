@@ -22,10 +22,6 @@ import { useTheme } from "@/stores/theme.store";
 import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
 import { getRefreshMs, subscribeRefresh } from "@/stores/refresh.store";
 
-const MOCK_BALANCE = 24592.4;
-const MOCK_DELTA = 1294;
-const MOCK_PERCENT = 5.5;
-
 export default function HomeScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
@@ -79,7 +75,31 @@ export default function HomeScreen() {
 
   const top3 = useMemo(() => stocks.slice(0, 3), [stocks]);
 
-  const isPositive = MOCK_DELTA >= 0;
+  /**
+   * 1 share per watchlist symbol (same as `stocks` from the API).
+   * - Total $ = sum of last prices (each `change` must be signed: losers subtract).
+   * - Combined % = sum(changes) / sum(price − change) × 100 — portfolio-style for equal weight.
+   *   Do not average or sum `changePercent` across symbols (wrong: different bases per stock).
+   */
+  const watchlistSnapshot = useMemo(() => {
+    if (!stocks.length) {
+      return { totalConverted: 0, changeConverted: 0, pct: 0 };
+    }
+    let totalUsd = 0;
+    let changeUsd = 0;
+    for (const s of stocks) {
+      totalUsd += s.price;
+      changeUsd += s.change;
+    }
+    const prevUsd = totalUsd - changeUsd;
+    const pct = prevUsd > 1e-6 ? (changeUsd / prevUsd) * 100 : 0;
+    const totalConverted = stocks.reduce((acc, s) => acc + convertPrice(s.price), 0);
+    const changeConverted = stocks.reduce((acc, s) => acc + convertPrice(s.change), 0);
+    return { totalConverted, changeConverted, pct };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- currSymbol updates when currency changes; convertPrice() reads module FX state
+  }, [stocks, currSymbol]);
+
+  const snapPositive = watchlistSnapshot.changeConverted >= 0;
 
   function renderHeader() {
     return (
@@ -108,18 +128,25 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Total Balance</Text>
+          <Text style={styles.balanceLabel}>Watchlist snapshot</Text>
           <Text style={styles.balanceValue}>
-            {currSymbol}{convertPrice(MOCK_BALANCE).toLocaleString(undefined, {
+            {currSymbol}
+            {watchlistSnapshot.totalConverted.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
           </Text>
           <View style={styles.balanceBottom}>
-            <View style={[styles.pill, !isPositive && styles.pillNegative]}>
-              <Text style={[styles.pillText, !isPositive && styles.pillTextNegative]}>
-                {isPositive ? "↗" : "↘"} {isPositive ? "+" : "-"}{currSymbol}
-                {convertPrice(Math.abs(MOCK_DELTA)).toLocaleString(undefined, { maximumFractionDigits: 0 })} ({MOCK_PERCENT.toFixed(1)}%)
+            <View style={[styles.pill, !snapPositive && styles.pillNegative]}>
+              <Text style={[styles.pillText, !snapPositive && styles.pillTextNegative]}>
+                {snapPositive ? "↗" : "↘"} {snapPositive ? "+" : "-"}
+                {currSymbol}
+                {Math.abs(watchlistSnapshot.changeConverted).toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}{" "}
+                ({watchlistSnapshot.pct >= 0 ? "+" : ""}
+                {watchlistSnapshot.pct.toFixed(1)}%)
               </Text>
             </View>
             <Text style={styles.todayText}>Today</Text>
@@ -273,7 +300,7 @@ const createStyles = () => StyleSheet.create({
   balanceLabel: {
     fontSize: 16,
     color: "rgba(255,255,255,0.6)",
-    fontFamily: Fonts.semiBold,
+    fontFamily: Fonts.bold,
   },
   balanceValue: {
     marginTop: 8,
