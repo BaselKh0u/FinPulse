@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Server.Data;
 
 [Route("api/[controller]")]
+[Route("market")]
 [ApiController]
 public class MarketController : ControllerBase
 {

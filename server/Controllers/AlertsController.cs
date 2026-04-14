@@ -4,6 +4,7 @@ using Server.Data;
 using Server.Models;
 
 [Route("api/[controller]")]
+[Route("alerts")]
 [ApiController]
 public class AlertsController : ControllerBase
 {
@@ -39,6 +40,18 @@ public class AlertsController : ControllerBase
             a.IsActive,
             a.CreatedAt
         }));
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Alert>>> GetAlerts([FromQuery] int userId)
+    {
+        var resolvedUserId = ResolveUserId(userId);
+        if (resolvedUserId <= 0)
+        {
+            return BadRequest(new { message = "Missing user id." });
+        }
+
+        return await GetUserAlerts(resolvedUserId);
     }
 
     [HttpPost]
@@ -127,6 +140,34 @@ public class AlertsController : ControllerBase
         return Ok(new { message = "Alert deactivated." });
     }
 
+    [HttpPatch("{alertId:int}/toggle")]
+    public async Task<IActionResult> ToggleAlert(int alertId, [FromBody] ToggleAlertRequest request)
+    {
+        var alert = await _context.Alerts.FindAsync(alertId);
+        if (alert is null)
+        {
+            return NotFound(new { message = "Alert not found." });
+        }
+
+        alert.IsActive = request.IsActive;
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Alert updated.", isActive = alert.IsActive });
+    }
+
+    [HttpDelete("{alertId:int}")]
+    public async Task<IActionResult> DeleteAlert(int alertId)
+    {
+        var alert = await _context.Alerts.FindAsync(alertId);
+        if (alert is null)
+        {
+            return NotFound(new { message = "Alert not found." });
+        }
+
+        _context.Alerts.Remove(alert);
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Alert deleted." });
+    }
+
     [HttpGet("events/{userId:int}")]
     public async Task<IActionResult> GetAlertEvents(int userId, [FromQuery] bool unreadOnly = false)
     {
@@ -211,6 +252,32 @@ public class AlertsController : ControllerBase
         return null;
     }
 
+    private int ResolveUserId(int userIdFromQuery)
+    {
+        if (userIdFromQuery > 0)
+        {
+            return userIdFromQuery;
+        }
+
+        if (Request.Headers.TryGetValue("Authorization", out var authHeader))
+        {
+            var token = authHeader.ToString().Replace("Bearer ", string.Empty).Trim();
+            if (token.StartsWith("server-session-", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(token["server-session-".Length..], out var tokenUserId))
+            {
+                return tokenUserId;
+            }
+        }
+
+        if (Request.Headers.TryGetValue("X-User-Id", out var headerValue) &&
+            int.TryParse(headerValue.ToString(), out var headerId))
+        {
+            return headerId;
+        }
+
+        return 0;
+    }
+
     public class AlertUpsertRequest
     {
         public int UserId { get; set; }
@@ -225,5 +292,10 @@ public class AlertsController : ControllerBase
         public string? ReportKeyword { get; set; }
         public string Message { get; set; } = string.Empty;
         public int CooldownMinutes { get; set; } = 60;
+    }
+
+    public class ToggleAlertRequest
+    {
+        public bool IsActive { get; set; }
     }
 }

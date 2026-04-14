@@ -4,6 +4,7 @@ using Server.Data;
 using Server.Models;
 
 [Route("api/[controller]")]
+[Route("stocks")]
 [ApiController]
 public class StockController : ControllerBase
 {
@@ -111,6 +112,29 @@ public class StockController : ControllerBase
             .ToListAsync();
 
         return Ok(data);
+    }
+
+    [HttpGet("{symbol}/chart")]
+    public async Task<IActionResult> GetChart(string symbol, [FromQuery] string range = "1M")
+    {
+        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
+        if (stock is null)
+        {
+            return NotFound(new { message = "Stock not found." });
+        }
+
+        var from = GetRangeStart(range);
+        var chart = await _context.PriceData
+            .Where(p => p.StockId == stock.StockId && p.RecordedAt >= from)
+            .OrderBy(p => p.RecordedAt)
+            .Select(p => new
+            {
+                label = p.RecordedAt.ToString("yyyy-MM-dd"),
+                value = (double)p.Price
+            })
+            .ToListAsync();
+
+        return Ok(chart);
     }
 
     [HttpGet("{symbol}/details")]

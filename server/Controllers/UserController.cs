@@ -3,11 +3,13 @@ using Microsoft.EntityFrameworkCore;
 using Server.Data;
 
 [Route("api/[controller]")]
+[Route("user")]
 [ApiController]
 public class UserController : ControllerBase
 {
     private readonly AppDbContext _context;
     private static readonly Dictionary<int, UserPreferencesDto> PreferencesByUserId = new();
+    private static readonly Dictionary<int, DeviceTokenDto> DeviceTokensByUserId = new();
 
     public UserController(AppDbContext context)
     {
@@ -104,11 +106,56 @@ public class UserController : ControllerBase
         return Ok(prefs);
     }
 
+    [HttpPost("device-token")]
+    public IActionResult RegisterDeviceToken([FromBody] DeviceTokenDto request, [FromQuery] int userId)
+    {
+        var resolvedUserId = ResolveUserId(userId);
+        if (resolvedUserId <= 0)
+        {
+            return BadRequest(new { message = "Missing user id." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ExpoPushToken))
+        {
+            return BadRequest(new { message = "expoPushToken is required." });
+        }
+
+        DeviceTokensByUserId[resolvedUserId] = new DeviceTokenDto
+        {
+            ExpoPushToken = request.ExpoPushToken.Trim(),
+            Platform = string.IsNullOrWhiteSpace(request.Platform) ? "unknown" : request.Platform.Trim()
+        };
+
+        return Ok(new { message = "Device token registered." });
+    }
+
+    [HttpPost("avatar")]
+    public IActionResult UploadAvatar(IFormFile file)
+    {
+        if (file == null || file.Length == 0)
+        {
+            return BadRequest(new { message = "Avatar file is required." });
+        }
+
+        // Placeholder URL shape until cloud storage integration is added.
+        return Ok(new { avatarUrl = $"/uploads/avatars/{Guid.NewGuid()}{Path.GetExtension(file.FileName)}" });
+    }
+
     private int ResolveUserId(int userIdFromQuery)
     {
         if (userIdFromQuery > 0)
         {
             return userIdFromQuery;
+        }
+
+        if (Request.Headers.TryGetValue("Authorization", out var authHeader))
+        {
+            var token = authHeader.ToString().Replace("Bearer ", string.Empty).Trim();
+            if (token.StartsWith("server-session-", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(token["server-session-".Length..], out var tokenUserId))
+            {
+                return tokenUserId;
+            }
         }
 
         if (Request.Headers.TryGetValue("X-User-Id", out var headerValue) &&
@@ -151,5 +198,11 @@ public class UserController : ControllerBase
         public bool DarkMode { get; set; }
         public string Currency { get; set; } = "USD";
         public string RefreshInterval { get; set; } = "30s";
+    }
+
+    public class DeviceTokenDto
+    {
+        public string ExpoPushToken { get; set; } = string.Empty;
+        public string Platform { get; set; } = string.Empty;
     }
 }
