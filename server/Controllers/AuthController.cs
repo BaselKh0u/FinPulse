@@ -21,7 +21,8 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
         var email = (request.Email ?? string.Empty).Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(request.Password))
+        var rawPassword = FirstNonEmpty(request.Password, request.PasswordHash);
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(rawPassword))
         {
             return BadRequest(new { message = "Email and password are required." });
         }
@@ -31,15 +32,19 @@ public class AuthController : ControllerBase
             return BadRequest(new { message = "A user with this email already exists." });
         }
 
-        var firstName = (request.FirstName ?? string.Empty).Trim();
-        var lastName = (request.LastName ?? string.Empty).Trim();
-        var fullName = $"{firstName} {lastName}".Trim();
+        var fullName = (request.FullName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(fullName))
+        {
+            var firstName = (request.FirstName ?? string.Empty).Trim();
+            var lastName = (request.LastName ?? string.Empty).Trim();
+            fullName = $"{firstName} {lastName}".Trim();
+        }
 
         var user = new User
         {
             Email = email,
             FullName = string.IsNullOrWhiteSpace(fullName) ? email : fullName,
-            PasswordHash = HashPassword(request.Password)
+            PasswordHash = HashPassword(rawPassword)
         };
 
         _context.Users.Add(user);
@@ -56,8 +61,9 @@ public class AuthController : ControllerBase
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
         var email = (request.Email ?? string.Empty).Trim().ToLowerInvariant();
+        var rawPassword = FirstNonEmpty(request.Password, request.PasswordHash);
         var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
-        if (user == null || user.PasswordHash != HashPassword(request.Password ?? string.Empty))
+        if (user == null || user.PasswordHash != HashPassword(rawPassword))
         {
             return Unauthorized(new { message = "Invalid email or password." });
         }
@@ -153,6 +159,19 @@ public class AuthController : ControllerBase
 
     private static string BuildToken(int userId) => $"server-session-{userId}";
 
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+            {
+                return v.Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
     private static string HashPassword(string password)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
@@ -163,14 +182,17 @@ public class AuthController : ControllerBase
     {
         public string FirstName { get; set; } = string.Empty;
         public string LastName { get; set; } = string.Empty;
+        public string FullName { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
+        public string PasswordHash { get; set; } = string.Empty;
     }
 
     public sealed class LoginRequest
     {
         public string Email { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
+        public string PasswordHash { get; set; } = string.Empty;
     }
 
     public sealed class ForgotPasswordRequest

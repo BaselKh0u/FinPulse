@@ -14,6 +14,16 @@ builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("FrontendDev", policy =>
+    {
+        policy
+            .WithOrigins("http://localhost:8081", "http://127.0.0.1:8081")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
@@ -33,6 +43,8 @@ if (enableSwagger)
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseCors("FrontendDev");
 
 // HTTP-only profiles (e.g. launch "http") have no HTTPS URL; redirect then warns and can break /swagger.
 var urls = app.Configuration["ASPNETCORE_URLS"]
