@@ -12,11 +12,13 @@ public class AuthController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly JwtService _jwtService;
+    private readonly EmailService _emailService;
 
-    public AuthController(AppDbContext context, JwtService jwtService)
+    public AuthController(AppDbContext context, JwtService jwtService, EmailService emailService)
     {
         _context = context;
         _jwtService = jwtService;
+        _emailService = emailService;
     }
 
     // POST: api/Auth/register
@@ -28,11 +30,15 @@ public class AuthController : ControllerBase
             return BadRequest(new { message = "Registration failed: A user with this email address already exists." });
         }
 
+        var verificationToken = Guid.NewGuid().ToString();
+
         var user = new User
         {
             FullName = request.FullName,
             Email = request.Email,
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password)
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
+            EmailVerificationToken = verificationToken,
+            EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24)
         };
 
         _context.Users.Add(user);
@@ -40,6 +46,8 @@ public class AuthController : ControllerBase
 
         _context.UserPreferences.Add(new UserPreferences { UserId = user.UserId });
         await _context.SaveChangesAsync();
+
+        await _emailService.SendVerificationEmail(user.Email, verificationToken);
 
         var token = _jwtService.GenerateToken(user.UserId, user.Email, user.FullName);
 
@@ -133,6 +141,52 @@ public class AuthController : ControllerBase
     {
         // JWT is stateless — the client is responsible for discarding the token
         return Ok(new { message = "Logged out successfully." });
+    }
+
+    // GET: api/Auth/verify-email?token={token}
+    [HttpGet("verify-email")]
+    public async Task<ContentResult> VerifyEmail([FromQuery] string token)
+    {
+        var user = await _context.Users
+            .FirstOrDefaultAsync(u => u.EmailVerificationToken == token);
+
+        if (user == null || user.EmailVerificationTokenExpiry < DateTime.UtcNow)
+        {
+            return new ContentResult
+            {
+                ContentType = "text/html",
+                StatusCode = 400,
+                Content = """
+                    <!DOCTYPE html>
+                    <html>
+                    <body style="font-family: Arial, sans-serif; text-align: center; padding: 60px;">
+                      <h2 style="color: #e53e3e;">Verification Failed</h2>
+                      <p>This verification link is invalid or has expired.</p>
+                    </body>
+                    </html>
+                    """
+            };
+        }
+
+        user.IsVerified = true;
+        user.EmailVerificationToken = string.Empty;
+        user.EmailVerificationTokenExpiry = null;
+        await _context.SaveChangesAsync();
+
+        return new ContentResult
+        {
+            ContentType = "text/html",
+            StatusCode = 200,
+            Content = """
+                <!DOCTYPE html>
+                <html>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 60px;">
+                  <h2 style="color: #38a169;">Email Verified Successfully!</h2>
+                  <p>Your email has been verified. You can close this page.</p>
+                </body>
+                </html>
+                """
+        };
     }
 }
 

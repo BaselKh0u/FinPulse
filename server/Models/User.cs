@@ -21,5 +21,7 @@ namespace Server.Models
         public string Phone { get; set; } = string.Empty;
         public string AvatarUrl { get; set; } = string.Empty;
         public bool IsVerified { get; set; } = false;
+        public string EmailVerificationToken { get; set; } = string.Empty;
+        public DateTime? EmailVerificationTokenExpiry { get; set; }
     }
 }
