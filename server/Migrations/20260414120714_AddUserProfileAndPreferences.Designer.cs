@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Server.Data;
 
@@ -11,9 +12,11 @@ using Server.Data;
 namespace Server.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260414120714_AddUserProfileAndPreferences")]
+    partial class AddUserProfileAndPreferences
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -30,97 +33,32 @@ namespace Server.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("AlertId"));
 
-                    b.Property<string>("ConditionType")
+                    b.Property<string>("AlertType")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("CooldownMinutes")
-                        .HasColumnType("int");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<string>("Direction")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<bool>("IsActive")
                         .HasColumnType("bit");
-
-                    b.Property<DateTime?>("LastTriggeredAt")
-                        .HasColumnType("datetime2");
 
                     b.Property<string>("Message")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<decimal?>("PercentageThreshold")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<decimal?>("ReferencePrice")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<string>("ReportKeyword")
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<int>("StockId")
                         .HasColumnType("int");
 
-                    b.Property<decimal?>("TargetPrice")
+                    b.Property<decimal>("ThresholdValue")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<int>("UserId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("VolatilityWindowMinutes")
                         .HasColumnType("int");
 
                     b.HasKey("AlertId");
 
-                    b.HasIndex("IsActive", "StockId");
-
                     b.ToTable("Alerts");
-                });
-
-            modelBuilder.Entity("Server.Models.AlertEvent", b =>
-                {
-                    b.Property<int>("AlertEventId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("AlertEventId"));
-
-                    b.Property<int>("AlertId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("ConditionType")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Details")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("IsRead")
-                        .HasColumnType("bit");
-
-                    b.Property<int>("StockId")
-                        .HasColumnType("int");
-
-                    b.Property<decimal?>("TriggerValue")
-                        .HasColumnType("decimal(18,2)");
-
-                    b.Property<int>("UserId")
-                        .HasColumnType("int");
-
-                    b.HasKey("AlertEventId");
-
-                    b.HasIndex("UserId", "CreatedAt");
-
-                    b.ToTable("AlertEvents");
                 });
 
             modelBuilder.Entity("Server.Models.ConfidenceScore", b =>
@@ -199,9 +137,6 @@ namespace Server.Migrations
 
                     b.HasKey("PriceId");
 
-                    b.HasIndex("StockId", "RecordedAt")
-                        .IsUnique();
-
                     b.ToTable("PriceData");
                 });
 
@@ -278,13 +213,6 @@ namespace Server.Migrations
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasColumnType("nvarchar(450)");
-
-                    b.Property<string>("EmailVerificationToken")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<DateTime?>("EmailVerificationTokenExpiry")
-                        .HasColumnType("datetime2");
 
                     b.Property<string>("FullName")
                         .IsRequired()

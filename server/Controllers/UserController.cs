@@ -1,208 +1,185 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Server.Data;
+using Server.Models;
+using System.Security.Claims;
 
 [Route("api/[controller]")]
-[Route("user")]
 [ApiController]
+[Authorize]
 public class UserController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private static readonly Dictionary<int, UserPreferencesDto> PreferencesByUserId = new();
-    private static readonly Dictionary<int, DeviceTokenDto> DeviceTokensByUserId = new();
 
     public UserController(AppDbContext context)
     {
         _context = context;
     }
 
+    private int GetUserId() => int.Parse(User.FindFirst("userId")!.Value);
+
+    // GET: api/User/profile
     [HttpGet("profile")]
-    public async Task<IActionResult> GetProfile([FromQuery] int userId)
+    public async Task<IActionResult> GetProfile()
     {
-        var resolvedUserId = ResolveUserId(userId);
-        if (resolvedUserId <= 0)
-        {
-            return BadRequest(new { message = "Missing user id." });
-        }
+        var userId = GetUserId();
 
-        var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == resolvedUserId);
-        if (user is null)
-        {
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
             return NotFound(new { message = "User not found." });
-        }
 
-        var names = SplitName(user.FullName);
         return Ok(new
         {
-            id = user.UserId.ToString(),
-            firstName = names.firstName,
-            lastName = names.lastName,
+            userId = user.UserId,
+            fullName = user.FullName,
             email = user.Email,
-            phone = (string?)null,
-            joinedAt = user.CreatedAt,
-            isVerified = true,
-            token = "server-session"
+            phone = user.Phone,
+            avatarUrl = user.AvatarUrl,
+            isVerified = user.IsVerified,
+            createdAt = user.CreatedAt
         });
     }
 
+    // PATCH: api/User/profile
     [HttpPatch("profile")]
-    public async Task<IActionResult> UpdateProfile([FromQuery] int userId, [FromBody] UpdateProfileDto request)
+    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request)
     {
-        var resolvedUserId = ResolveUserId(userId);
-        var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == resolvedUserId);
-        if (user is null)
-        {
-            return NotFound(new { message = "User not found." });
-        }
+        var userId = GetUserId();
 
-        var first = string.IsNullOrWhiteSpace(request.FirstName) ? SplitName(user.FullName).firstName : request.FirstName.Trim();
-        var last = string.IsNullOrWhiteSpace(request.LastName) ? SplitName(user.FullName).lastName : request.LastName.Trim();
-        user.FullName = $"{first} {last}".Trim();
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+            return NotFound(new { message = "User not found." });
+
+        if (request.FullName is not null)
+            user.FullName = request.FullName;
+
+        if (request.Phone is not null)
+            user.Phone = request.Phone;
 
         await _context.SaveChangesAsync();
-        return await GetProfile(resolvedUserId);
+
+        return Ok(new
+        {
+            userId = user.UserId,
+            fullName = user.FullName,
+            email = user.Email,
+            phone = user.Phone,
+            avatarUrl = user.AvatarUrl,
+            isVerified = user.IsVerified,
+            createdAt = user.CreatedAt
+        });
     }
 
+    // POST: api/User/avatar
+    [HttpPost("avatar")]
+    public async Task<IActionResult> UpdateAvatar([FromBody] UpdateAvatarRequest request)
+    {
+        var userId = GetUserId();
+
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+            return NotFound(new { message = "User not found." });
+
+        user.AvatarUrl = request.AvatarUrl;
+        await _context.SaveChangesAsync();
+
+        return Ok(new { avatarUrl = user.AvatarUrl });
+    }
+
+    // GET: api/User/preferences
     [HttpGet("preferences")]
-    public IActionResult GetPreferences([FromQuery] int userId)
+    public async Task<IActionResult> GetPreferences()
     {
-        var resolvedUserId = ResolveUserId(userId);
-        if (resolvedUserId <= 0)
-        {
-            return BadRequest(new { message = "Missing user id." });
-        }
+        var userId = GetUserId();
 
-        if (!PreferencesByUserId.TryGetValue(resolvedUserId, out var prefs))
-        {
-            prefs = new UserPreferencesDto();
-            PreferencesByUserId[resolvedUserId] = prefs;
-        }
+        var prefs = await _context.UserPreferences.FirstOrDefaultAsync(up => up.UserId == userId);
+        if (prefs == null)
+            return NotFound(new { message = "Preferences not found." });
 
-        return Ok(prefs);
+        return Ok(MapPreferences(prefs));
     }
 
+    // PATCH: api/User/preferences
     [HttpPatch("preferences")]
-    public IActionResult UpdatePreferences([FromQuery] int userId, [FromBody] UserPreferencesDto patch)
+    public async Task<IActionResult> UpdatePreferences([FromBody] UpdatePreferencesRequest request)
     {
-        var resolvedUserId = ResolveUserId(userId);
-        if (resolvedUserId <= 0)
-        {
-            return BadRequest(new { message = "Missing user id." });
-        }
+        var userId = GetUserId();
 
-        if (!PreferencesByUserId.TryGetValue(resolvedUserId, out var prefs))
-        {
-            prefs = new UserPreferencesDto();
-        }
+        var prefs = await _context.UserPreferences.FirstOrDefaultAsync(up => up.UserId == userId);
+        if (prefs == null)
+            return NotFound(new { message = "Preferences not found." });
 
-        prefs.PushNotifications = patch.PushNotifications;
-        prefs.AlertSound = patch.AlertSound;
-        prefs.BiometricLogin = patch.BiometricLogin;
-        prefs.DarkMode = patch.DarkMode;
-        prefs.Currency = string.IsNullOrWhiteSpace(patch.Currency) ? prefs.Currency : patch.Currency;
-        prefs.RefreshInterval = string.IsNullOrWhiteSpace(patch.RefreshInterval) ? prefs.RefreshInterval : patch.RefreshInterval;
-        PreferencesByUserId[resolvedUserId] = prefs;
+        if (request.PushNotifications is not null)
+            prefs.PushNotifications = request.PushNotifications.Value;
 
-        return Ok(prefs);
+        if (request.AlertSound is not null)
+            prefs.AlertSound = request.AlertSound.Value;
+
+        if (request.BiometricLogin is not null)
+            prefs.BiometricLogin = request.BiometricLogin.Value;
+
+        if (request.DarkMode is not null)
+            prefs.DarkMode = request.DarkMode.Value;
+
+        if (request.Currency is not null)
+            prefs.Currency = request.Currency;
+
+        if (request.RefreshInterval is not null)
+            prefs.RefreshInterval = request.RefreshInterval.Value;
+
+        await _context.SaveChangesAsync();
+
+        return Ok(MapPreferences(prefs));
     }
 
+    // POST: api/User/device-token
     [HttpPost("device-token")]
-    public IActionResult RegisterDeviceToken([FromBody] DeviceTokenDto request, [FromQuery] int userId)
+    public async Task<IActionResult> RegisterDeviceToken([FromBody] DeviceTokenRequest request)
     {
-        var resolvedUserId = ResolveUserId(userId);
-        if (resolvedUserId <= 0)
+        var userId = GetUserId();
+
+        var existing = await _context.DeviceTokens
+            .FirstOrDefaultAsync(dt => dt.UserId == userId && dt.ExpoPushToken == request.ExpoPushToken);
+
+        if (existing is not null)
         {
-            return BadRequest(new { message = "Missing user id." });
+            existing.Platform = request.Platform;
+        }
+        else
+        {
+            _context.DeviceTokens.Add(new DeviceToken
+            {
+                UserId = userId,
+                ExpoPushToken = request.ExpoPushToken,
+                Platform = request.Platform
+            });
         }
 
-        if (string.IsNullOrWhiteSpace(request.ExpoPushToken))
-        {
-            return BadRequest(new { message = "expoPushToken is required." });
-        }
-
-        DeviceTokensByUserId[resolvedUserId] = new DeviceTokenDto
-        {
-            ExpoPushToken = request.ExpoPushToken.Trim(),
-            Platform = string.IsNullOrWhiteSpace(request.Platform) ? "unknown" : request.Platform.Trim()
-        };
+        await _context.SaveChangesAsync();
 
         return Ok(new { message = "Device token registered." });
     }
 
-    [HttpPost("avatar")]
-    public IActionResult UploadAvatar(IFormFile file)
+    private static object MapPreferences(UserPreferences prefs) => new
     {
-        if (file == null || file.Length == 0)
-        {
-            return BadRequest(new { message = "Avatar file is required." });
-        }
-
-        // Placeholder URL shape until cloud storage integration is added.
-        return Ok(new { avatarUrl = $"/uploads/avatars/{Guid.NewGuid()}{Path.GetExtension(file.FileName)}" });
-    }
-
-    private int ResolveUserId(int userIdFromQuery)
-    {
-        if (userIdFromQuery > 0)
-        {
-            return userIdFromQuery;
-        }
-
-        if (Request.Headers.TryGetValue("Authorization", out var authHeader))
-        {
-            var token = authHeader.ToString().Replace("Bearer ", string.Empty).Trim();
-            if (token.StartsWith("server-session-", StringComparison.OrdinalIgnoreCase) &&
-                int.TryParse(token["server-session-".Length..], out var tokenUserId))
-            {
-                return tokenUserId;
-            }
-        }
-
-        if (Request.Headers.TryGetValue("X-User-Id", out var headerValue) &&
-            int.TryParse(headerValue.ToString(), out var headerId))
-        {
-            return headerId;
-        }
-
-        return 0;
-    }
-
-    private static (string firstName, string lastName) SplitName(string fullName)
-    {
-        var parts = (fullName ?? string.Empty).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0)
-        {
-            return ("User", string.Empty);
-        }
-
-        if (parts.Length == 1)
-        {
-            return (parts[0], string.Empty);
-        }
-
-        return (parts[0], string.Join(' ', parts.Skip(1)));
-    }
-
-    public class UpdateProfileDto
-    {
-        public string? FirstName { get; set; }
-        public string? LastName { get; set; }
-        public string? Phone { get; set; }
-    }
-
-    public class UserPreferencesDto
-    {
-        public bool PushNotifications { get; set; } = true;
-        public bool AlertSound { get; set; } = true;
-        public bool BiometricLogin { get; set; }
-        public bool DarkMode { get; set; }
-        public string Currency { get; set; } = "USD";
-        public string RefreshInterval { get; set; } = "30s";
-    }
-
-    public class DeviceTokenDto
-    {
-        public string ExpoPushToken { get; set; } = string.Empty;
-        public string Platform { get; set; } = string.Empty;
-    }
+        pushNotifications = prefs.PushNotifications,
+        alertSound = prefs.AlertSound,
+        biometricLogin = prefs.BiometricLogin,
+        darkMode = prefs.DarkMode,
+        currency = prefs.Currency,
+        refreshInterval = prefs.RefreshInterval
+    };
 }
+
+public record UpdateProfileRequest(string? FullName, string? Phone);
+public record UpdateAvatarRequest(string AvatarUrl);
+public record UpdatePreferencesRequest(
+    bool? PushNotifications,
+    bool? AlertSound,
+    bool? BiometricLogin,
+    bool? DarkMode,
+    string? Currency,
+    int? RefreshInterval
+);
+public record DeviceTokenRequest(string ExpoPushToken, string Platform);

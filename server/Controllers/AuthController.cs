@@ -1,9 +1,10 @@
-﻿using System.Security.Cryptography;
-using System.Text;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Server.Data;
 using Server.Models;
+using Server.Services;
+using System.Security.Claims;
 
 [Route("api/[controller]")]
 [Route("auth")]
@@ -11,198 +12,185 @@ using Server.Models;
 public class AuthController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly JwtService _jwtService;
+    private readonly EmailService _emailService;
 
-    public AuthController(AppDbContext context)
+    public AuthController(AppDbContext context, JwtService jwtService, EmailService emailService)
     {
         _context = context;
+        _jwtService = jwtService;
+        _emailService = emailService;
     }
 
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
-        var email = (request.Email ?? string.Empty).Trim().ToLowerInvariant();
-        var rawPassword = FirstNonEmpty(request.Password, request.PasswordHash);
-        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(rawPassword))
+        if (await _context.Users.AnyAsync(u => u.Email == request.Email))
         {
             return BadRequest(new { message = "Email and password are required." });
         }
 
-        if (await _context.Users.AnyAsync(u => u.Email == email))
-        {
-            return BadRequest(new { message = "A user with this email already exists." });
-        }
-
-        var fullName = (request.FullName ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(fullName))
-        {
-            var firstName = (request.FirstName ?? string.Empty).Trim();
-            var lastName = (request.LastName ?? string.Empty).Trim();
-            fullName = $"{firstName} {lastName}".Trim();
-        }
+        var verificationToken = Guid.NewGuid().ToString();
 
         var user = new User
         {
-            Email = email,
-            FullName = string.IsNullOrWhiteSpace(fullName) ? email : fullName,
-            PasswordHash = HashPassword(rawPassword)
+            FullName = request.FullName,
+            Email = request.Email,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
+            EmailVerificationToken = verificationToken,
+            EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24)
         };
 
         _context.Users.Add(user);
         await _context.SaveChangesAsync();
 
+        _context.UserPreferences.Add(new UserPreferences { UserId = user.UserId });
+        await _context.SaveChangesAsync();
+
+        await _emailService.SendVerificationEmail(user.Email, verificationToken);
+
+        var token = _jwtService.GenerateToken(user.UserId, user.Email, user.FullName);
+
         return Ok(new
         {
-            token = BuildToken(user.UserId),
-            userId = user.UserId
+            token,
+            userId = user.UserId,
+            fullName = user.FullName
         });
     }
 
+    // POST: api/Auth/login
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
-        var email = (request.Email ?? string.Empty).Trim().ToLowerInvariant();
-        var rawPassword = FirstNonEmpty(request.Password, request.PasswordHash);
-        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == email);
-        if (user == null || user.PasswordHash != HashPassword(rawPassword))
+        var user = await _context.Users
+            .FirstOrDefaultAsync(u => u.Email == request.Email);
+
+        if (user == null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
         {
             return Unauthorized(new { message = "Invalid email or password." });
         }
 
+        var token = _jwtService.GenerateToken(user.UserId, user.Email, user.FullName);
+
         return Ok(new
         {
-            token = BuildToken(user.UserId),
-            userId = user.UserId
+            token,
+            userId = user.UserId,
+            fullName = user.FullName
         });
     }
 
+    // POST: api/Auth/forgot-password
     [HttpPost("forgot-password")]
-    public IActionResult ForgotPassword([FromBody] ForgotPasswordRequest request)
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
-        return Ok(new
-        {
-            message = "If that email exists, a reset link has been sent.",
-            email = request.Email
-        });
+        // Always return the same message to avoid email enumeration
+        await _context.Users.AnyAsync(u => u.Email == request.Email);
+
+        return Ok(new { message = "If this email exists, a reset link has been sent." });
     }
 
+    // POST: api/Auth/change-password
+    [Authorize]
     [HttpPost("change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
     {
-        var userId = ResolveUserIdFromAuthHeader();
-        if (userId <= 0)
-        {
-            return Unauthorized(new { message = "Missing or invalid Authorization token." });
-        }
+        var userId = int.Parse(User.FindFirst("userId")!.Value);
 
-        var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == userId);
+        var user = await _context.Users.FindAsync(userId);
         if (user == null)
-        {
-            return NotFound(new { message = "User not found." });
-        }
+            return Unauthorized(new { message = "User not found." });
 
-        if (user.PasswordHash != HashPassword(request.OldPassword ?? string.Empty))
-        {
-            return BadRequest(new { message = "Old password is incorrect." });
-        }
+        if (!BCrypt.Net.BCrypt.Verify(request.OldPassword, user.PasswordHash))
+            return BadRequest(new { message = "Current password is incorrect." });
 
-        user.PasswordHash = HashPassword(request.NewPassword ?? string.Empty);
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
         await _context.SaveChangesAsync();
-        return Ok(new { message = "Password updated." });
+
+        return Ok(new { message = "Password changed successfully." });
     }
 
-    [HttpPost("verify-email")]
-    [HttpGet("verify-email")]
-    public IActionResult VerifyEmail()
-    {
-        return Ok(new { verified = true });
-    }
-
+    // DELETE: api/Auth/delete-account
+    [Authorize]
     [HttpDelete("delete-account")]
     public async Task<IActionResult> DeleteAccount()
     {
-        var userId = ResolveUserIdFromAuthHeader();
-        if (userId <= 0)
-        {
-            return Unauthorized(new { message = "Missing or invalid Authorization token." });
-        }
+        var userId = int.Parse(User.FindFirst("userId")!.Value);
 
-        _context.Alerts.RemoveRange(_context.Alerts.Where(a => a.UserId == userId));
-        _context.AlertEvents.RemoveRange(_context.AlertEvents.Where(a => a.UserId == userId));
-        _context.Watchlists.RemoveRange(_context.Watchlists.Where(w => w.UserId == userId));
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+            return Unauthorized(new { message = "User not found." });
 
-        var user = await _context.Users.FirstOrDefaultAsync(u => u.UserId == userId);
-        if (user != null)
-        {
-            _context.Users.Remove(user);
-        }
+        // Explicitly delete related records before removing the user
+        await _context.UserPreferences.Where(up => up.UserId == userId).ExecuteDeleteAsync();
+        await _context.Watchlists.Where(w => w.UserId == userId).ExecuteDeleteAsync();
+        await _context.Alerts.Where(a => a.UserId == userId).ExecuteDeleteAsync();
+        await _context.DeviceTokens.Where(dt => dt.UserId == userId).ExecuteDeleteAsync();
 
+        _context.Users.Remove(user);
         await _context.SaveChangesAsync();
-        return Ok(new { message = "Account deleted." });
+
+        return Ok(new { message = "Account deleted successfully." });
     }
 
+    // POST: api/Auth/logout
+    [Authorize]
     [HttpPost("logout")]
-    public IActionResult Logout() => Ok(new { message = "Logged out." });
-
-    private int ResolveUserIdFromAuthHeader()
+    public IActionResult Logout()
     {
-        if (!Request.Headers.TryGetValue("Authorization", out var authHeader))
-        {
-            return 0;
-        }
-
-        var token = authHeader.ToString().Replace("Bearer ", string.Empty).Trim();
-        return token.StartsWith("server-session-", StringComparison.OrdinalIgnoreCase)
-            && int.TryParse(token["server-session-".Length..], out var userId)
-            ? userId
-            : 0;
+        // JWT is stateless — the client is responsible for discarding the token
+        return Ok(new { message = "Logged out successfully." });
     }
 
-    private static string BuildToken(int userId) => $"server-session-{userId}";
-
-    private static string FirstNonEmpty(params string?[] values)
+    // GET: api/Auth/verify-email?token={token}
+    [HttpGet("verify-email")]
+    public async Task<ContentResult> VerifyEmail([FromQuery] string token)
     {
-        foreach (var v in values)
+        var user = await _context.Users
+            .FirstOrDefaultAsync(u => u.EmailVerificationToken == token);
+
+        if (user == null || user.EmailVerificationTokenExpiry < DateTime.UtcNow)
         {
-            if (!string.IsNullOrWhiteSpace(v))
+            return new ContentResult
             {
-                return v.Trim();
-            }
+                ContentType = "text/html",
+                StatusCode = 400,
+                Content = """
+                    <!DOCTYPE html>
+                    <html>
+                    <body style="font-family: Arial, sans-serif; text-align: center; padding: 60px;">
+                      <h2 style="color: #e53e3e;">Verification Failed</h2>
+                      <p>This verification link is invalid or has expired.</p>
+                    </body>
+                    </html>
+                    """
+            };
         }
 
-        return string.Empty;
-    }
+        user.IsVerified = true;
+        user.EmailVerificationToken = string.Empty;
+        user.EmailVerificationTokenExpiry = null;
+        await _context.SaveChangesAsync();
 
-    private static string HashPassword(string password)
-    {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-        return Convert.ToHexString(bytes);
-    }
-
-    public sealed class RegisterRequest
-    {
-        public string FirstName { get; set; } = string.Empty;
-        public string LastName { get; set; } = string.Empty;
-        public string FullName { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
-        public string Password { get; set; } = string.Empty;
-        public string PasswordHash { get; set; } = string.Empty;
-    }
-
-    public sealed class LoginRequest
-    {
-        public string Email { get; set; } = string.Empty;
-        public string Password { get; set; } = string.Empty;
-        public string PasswordHash { get; set; } = string.Empty;
-    }
-
-    public sealed class ForgotPasswordRequest
-    {
-        public string Email { get; set; } = string.Empty;
-    }
-
-    public sealed class ChangePasswordRequest
-    {
-        public string OldPassword { get; set; } = string.Empty;
-        public string NewPassword { get; set; } = string.Empty;
+        return new ContentResult
+        {
+            ContentType = "text/html",
+            StatusCode = 200,
+            Content = """
+                <!DOCTYPE html>
+                <html>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 60px;">
+                  <h2 style="color: #38a169;">Email Verified Successfully!</h2>
+                  <p>Your email has been verified. You can close this page.</p>
+                </body>
+                </html>
+                """
+        };
     }
 }
+
+public record RegisterRequest(string FullName, string Email, string Password);
+public record LoginRequest(string Email, string Password);
+public record ForgotPasswordRequest(string Email);
+public record ChangePasswordRequest(string OldPassword, string NewPassword);

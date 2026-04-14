@@ -1,7 +1,9 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Server.Data;
 using Server.Models;
+using System.Security.Claims;
 
 [Route("api/[controller]")]
 [Route("stocks")]
@@ -15,262 +17,198 @@ public class StockController : ControllerBase
         _context = context;
     }
 
+    private int GetUserId() => int.Parse(User.FindFirst("userId")!.Value);
+
+    // GET: api/Stock
+    // Returns the logged-in user's watchlist with latest price for each stock
+    [Authorize]
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<object>>> GetStocks()
+    public async Task<IActionResult> GetWatchlist()
     {
-        var stocks = await _context.Stocks.ToListAsync();
-        var items = new List<object>();
-        foreach (var stock in stocks)
+        var userId = GetUserId();
+
+        var watchlist = await _context.Watchlists
+            .Where(w => w.UserId == userId)
+            .Join(_context.Stocks,
+                w => w.StockId,
+                s => s.StockId,
+                (w, s) => new { w.AddedAt, Stock = s })
+            .ToListAsync();
+
+        var stockIds = watchlist.Select(w => w.Stock.StockId).ToList();
+
+        // Fetch latest PriceData for each stock in one query
+        var latestPrices = await _context.PriceData
+            .Where(p => stockIds.Contains(p.StockId))
+            .GroupBy(p => p.StockId)
+            .Select(g => g.OrderByDescending(p => p.RecordedAt).First())
+            .ToListAsync();
+
+        var priceMap = latestPrices.ToDictionary(p => p.StockId);
+
+        var result = watchlist.Select(w =>
         {
-            var latest = await _context.PriceData
-                .Where(p => p.StockId == stock.StockId)
-                .OrderByDescending(p => p.RecordedAt)
-                .Take(2)
-                .ToListAsync();
-
-            var currentPrice = latest.FirstOrDefault()?.Price ?? 0m;
-            var previous = latest.Skip(1).FirstOrDefault()?.Price ?? currentPrice;
-            var change = currentPrice - previous;
-            var changePercent = previous == 0 ? 0 : (change / previous) * 100m;
-
-            items.Add(new
+            priceMap.TryGetValue(w.Stock.StockId, out var price);
+            return new
             {
-                stockId = stock.StockId,
-                symbol = stock.Symbol,
-                name = stock.CompanyName,
-                price = (double)currentPrice,
-                change = (double)change,
-                changePercent = (double)changePercent
-            });
-        }
+                stockId = w.Stock.StockId,
+                symbol = w.Stock.Symbol,
+                companyName = w.Stock.CompanyName,
+                sector = w.Stock.Sector,
+                price = price?.Price ?? 0,
+                volume = price?.Volume ?? 0,
+                addedAt = w.AddedAt
+            };
+        });
 
-        return Ok(items);
+        return Ok(result);
     }
 
+    // POST: api/Stock
+    // Add a stock to the user's watchlist by symbol
+    [Authorize]
     [HttpPost]
-    public async Task<IActionResult> CreateStock(Stock stock)
+    public async Task<IActionResult> AddToWatchlist([FromBody] AddStockRequest request)
     {
-        if (await _context.Stocks.AnyAsync(s => s.Symbol == stock.Symbol))
+        var userId = GetUserId();
+
+        var symbol = request.Symbol.ToUpper();
+
+        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol);
+        if (stock == null)
         {
-            return BadRequest(new { message = "Stock with this symbol already exists." });
+            stock = new Stock { Symbol = symbol };
+            _context.Stocks.Add(stock);
+            await _context.SaveChangesAsync();
         }
 
-        _context.Stocks.Add(stock);
+        var alreadyInWatchlist = await _context.Watchlists
+            .AnyAsync(w => w.UserId == userId && w.StockId == stock.StockId);
+
+        if (alreadyInWatchlist)
+            return BadRequest(new { message = "Stock is already in your watchlist." });
+
+        _context.Watchlists.Add(new Watchlist { UserId = userId, StockId = stock.StockId });
         await _context.SaveChangesAsync();
 
-        return Ok(new { message = "Stock added successfully.", stockId = stock.StockId });
+        return Ok(new { message = "Stock added to watchlist.", stockId = stock.StockId });
     }
 
+    // DELETE: api/Stock/{symbol}
+    // Remove a stock from the user's watchlist
+    [Authorize]
     [HttpDelete("{symbol}")]
-    public async Task<IActionResult> DeleteStock(string symbol)
+    public async Task<IActionResult> RemoveFromWatchlist(string symbol)
     {
-        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
-        if (stock is null)
-        {
-            return NotFound(new { message = "Stock not found." });
-        }
+        var userId = GetUserId();
 
-        _context.Stocks.Remove(stock);
+        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
+        if (stock == null)
+            return NotFound(new { message = "Stock not found." });
+
+        var entry = await _context.Watchlists
+            .FirstOrDefaultAsync(w => w.UserId == userId && w.StockId == stock.StockId);
+
+        if (entry == null)
+            return NotFound(new { message = "Stock is not in your watchlist." });
+
+        _context.Watchlists.Remove(entry);
         await _context.SaveChangesAsync();
-        return Ok(new { message = "Stock removed successfully." });
+
+        return Ok(new { message = "Stock removed from watchlist." });
     }
 
+    // GET: api/Stock/search?q={query}
     [HttpGet("search")]
     public async Task<IActionResult> Search([FromQuery] string q)
     {
-        var query = (q ?? string.Empty).Trim().ToUpper();
-        var stocks = await _context.Stocks
-            .Where(s => s.Symbol.Contains(query) || s.CompanyName.ToUpper().Contains(query))
-            .Take(30)
-            .ToListAsync();
+        if (string.IsNullOrWhiteSpace(q))
+            return Ok(Array.Empty<object>());
 
-        return Ok(stocks.Select(s => new
-        {
-            stockId = s.StockId,
-            symbol = s.Symbol,
-            name = s.CompanyName,
-            price = 0,
-            change = 0,
-            changePercent = 0
-        }));
-    }
+        var term = q.Trim().ToUpper();
 
-    [HttpGet("{symbol}/history")]
-    public async Task<IActionResult> GetHistory(string symbol, [FromQuery] string range = "1M")
-    {
-        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
-        if (stock is null)
-        {
-            return NotFound(new { message = "Stock not found." });
-        }
-
-        var from = GetRangeStart(range);
-        var data = await _context.PriceData
-            .Where(p => p.StockId == stock.StockId && p.RecordedAt >= from)
-            .OrderBy(p => p.RecordedAt)
-            .Select(p => (double)p.Price)
-            .ToListAsync();
-
-        return Ok(data);
-    }
-
-    [HttpGet("{symbol}/chart")]
-    public async Task<IActionResult> GetChart(string symbol, [FromQuery] string range = "1M")
-    {
-        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
-        if (stock is null)
-        {
-            return NotFound(new { message = "Stock not found." });
-        }
-
-        var from = GetRangeStart(range);
-        var chart = await _context.PriceData
-            .Where(p => p.StockId == stock.StockId && p.RecordedAt >= from)
-            .OrderBy(p => p.RecordedAt)
-            .Select(p => new
+        var results = await _context.Stocks
+            .Where(s => s.Symbol.ToUpper().Contains(term) || s.CompanyName.ToUpper().Contains(term))
+            .Select(s => new
             {
-                label = p.RecordedAt.ToString("yyyy-MM-dd"),
-                value = (double)p.Price
+                stockId = s.StockId,
+                symbol = s.Symbol,
+                companyName = s.CompanyName,
+                sector = s.Sector
             })
             .ToListAsync();
 
-        return Ok(chart);
+        return Ok(results);
     }
 
+    // GET: api/Stock/{symbol}/details
     [HttpGet("{symbol}/details")]
     public async Task<IActionResult> GetDetails(string symbol)
     {
         var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
-        if (stock is null)
-        {
+        if (stock == null)
             return NotFound(new { message = "Stock not found." });
-        }
 
-        var priceData = await _context.PriceData
+        var priceHistory = await _context.PriceData
             .Where(p => p.StockId == stock.StockId)
             .OrderByDescending(p => p.RecordedAt)
-            .Take(180)
+            .Take(30)
+            .Select(p => new { price = p.Price, volume = p.Volume, recordedAt = p.RecordedAt })
             .ToListAsync();
 
-        var ordered = priceData.OrderBy(p => p.RecordedAt).ToList();
-        var latest = ordered.LastOrDefault();
-        var previous = ordered.Count > 1 ? ordered[^2] : latest;
-
-        var sentimentRows = await _context.SentimentAnalyses
-            .Where(sa => sa.StockId == stock.StockId)
-            .OrderByDescending(sa => sa.AnalyzedAt)
-            .Take(100)
-            .ToListAsync();
-        var confidence = await _context.ConfidenceScores
-            .Where(c => c.StockId == stock.StockId)
-            .OrderByDescending(c => c.CalculatedAt)
-            .Select(c => (double?)c.ConfidenceValue)
-            .FirstOrDefaultAsync();
-
-        var bullish = sentimentRows.Count(s => s.SentimentScore > 0.2m);
-        var bearish = sentimentRows.Count(s => s.SentimentScore < -0.2m);
-        var neutral = Math.Max(0, sentimentRows.Count - bullish - bearish);
-        var sentimentAvg = sentimentRows.Count == 0 ? 0 : (double)sentimentRows.Average(s => s.SentimentScore);
-
-        var chartData = ordered.Select(o => (double)o.Price).ToList();
-        var stabilityScore = CalculateStabilityScore(chartData);
-        var confidenceScore = (int)Math.Round(((confidence ?? 0.5) * 100));
+        var latestPrice = priceHistory.FirstOrDefault();
 
         return Ok(new
         {
+            stockId = stock.StockId,
             symbol = stock.Symbol,
-            name = stock.CompanyName,
-            price = (double)(latest?.Price ?? 0m),
-            change = (double)((latest?.Price ?? 0m) - (previous?.Price ?? latest?.Price ?? 0m)),
-            changePercent = previous is null || previous.Price == 0
-                ? 0
-                : (double)(((latest?.Price ?? 0m) - previous.Price) / previous.Price * 100m),
-            description = $"Live market profile for {stock.CompanyName}.",
-            sector = string.IsNullOrWhiteSpace(stock.Sector) ? "N/A" : stock.Sector,
-            industry = "N/A",
-            employees = "N/A",
-            headquarters = "N/A",
-            stabilityScore,
-            confidenceScore,
-            keyStats = new
-            {
-                open = (double)(ordered.FirstOrDefault()?.Price ?? 0m),
-                high = (double)(ordered.Count == 0 ? 0m : ordered.Max(p => p.Price)),
-                low = (double)(ordered.Count == 0 ? 0m : ordered.Min(p => p.Price)),
-                close = (double)(latest?.Price ?? 0m),
-                volume = $"{(latest?.Volume ?? 0):N0}",
-                avgVolume = $"{(ordered.Count == 0 ? 0 : ordered.Average(p => p.Volume)):N0}",
-                marketCap = "N/A",
-                peRatio = (double?)null,
-                week52High = (double)(ordered.Count == 0 ? 0m : ordered.Max(p => p.Price)),
-                week52Low = (double)(ordered.Count == 0 ? 0m : ordered.Min(p => p.Price)),
-                dividend = "N/A",
-                beta = 1.0
-            },
-            sentiment = new
-            {
-                bullish,
-                bearish,
-                neutral,
-                score = sentimentAvg,
-                mentions = sentimentRows.Count,
-                trending = sentimentRows.Count > 20
-            },
-            news = sentimentRows.Take(8).Select((s, index) => new
-            {
-                id = $"{stock.Symbol}-{index}-{s.AnalyzedAt:yyyyMMddHHmmss}",
-                title = s.Source,
-                source = "Social/News",
-                publishedAt = s.AnalyzedAt,
-                url = "#",
-                sentiment = s.SentimentScore > 0.2m ? "positive" : s.SentimentScore < -0.2m ? "negative" : "neutral"
-            }),
-            chartData
+            companyName = stock.CompanyName,
+            sector = stock.Sector,
+            latestPrice = latestPrice?.price ?? 0,
+            priceHistory
         });
     }
 
-    private static DateTime GetRangeStart(string range)
+    // GET: api/Stock/{symbol}/chart?range={range}
+    [HttpGet("{symbol}/chart")]
+    public async Task<IActionResult> GetChart(string symbol, [FromQuery] string range = "1M")
     {
-        var now = DateTime.UtcNow;
-        return range.ToUpper() switch
+        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
+        if (stock == null)
+            return NotFound(new { message = "Stock not found." });
+
+        var cutoff = range switch
         {
-            "1D" => now.AddDays(-1),
-            "1W" => now.AddDays(-7),
-            "1M" => now.AddMonths(-1),
-            "3M" => now.AddMonths(-3),
-            "1Y" => now.AddYears(-1),
-            _ => now.AddYears(-10)
+            "1D"  => DateTime.UtcNow.AddHours(-24),
+            "1W"  => DateTime.UtcNow.AddDays(-7),
+            "1M"  => DateTime.UtcNow.AddDays(-30),
+            "3M"  => DateTime.UtcNow.AddDays(-90),
+            "1Y"  => DateTime.UtcNow.AddDays(-365),
+            "ALL" => DateTime.MinValue,
+            _     => DateTime.UtcNow.AddDays(-30)
         };
-    }
 
-    private static int CalculateStabilityScore(List<double> prices)
-    {
-        if (prices.Count < 2)
+        var labelFormat = range switch
         {
-            return 50;
-        }
+            "1D" => "HH:mm",
+            "1W" => "ddd dd",
+            _    => "MMM dd"
+        };
 
-        var returns = new List<double>();
-        for (var i = 1; i < prices.Count; i++)
+        var points = await _context.PriceData
+            .Where(p => p.StockId == stock.StockId && p.RecordedAt >= cutoff)
+            .OrderBy(p => p.RecordedAt)
+            .Select(p => new { p.Price, p.RecordedAt })
+            .ToListAsync();
+
+        var result = points.Select(p => new
         {
-            if (prices[i - 1] == 0)
-            {
-                continue;
-            }
+            label = p.RecordedAt.ToString(labelFormat),
+            value = p.Price
+        });
 
-            returns.Add((prices[i] - prices[i - 1]) / prices[i - 1]);
-        }
-
-        if (returns.Count == 0)
-        {
-            return 50;
-        }
-
-        var avg = returns.Average();
-        var variance = returns.Select(r => (r - avg) * (r - avg)).Average();
-        var stdDevPercent = Math.Sqrt(variance) * 100;
-
-        var normalized = Math.Clamp(100 - (stdDevPercent * 12), 0, 100);
-        return (int)Math.Round(normalized);
+        return Ok(result);
     }
 }
+
+public record AddStockRequest(string Symbol);

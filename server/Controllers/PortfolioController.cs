@@ -1,10 +1,12 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Server.Data;
+using System.Security.Claims;
 
-[Route("portfolio")]
 [Route("api/[controller]")]
 [ApiController]
+[Authorize]
 public class PortfolioController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -14,76 +16,57 @@ public class PortfolioController : ControllerBase
         _context = context;
     }
 
-    [HttpGet("summary")]
-    public async Task<IActionResult> GetSummary([FromQuery] int userId)
-    {
-        var resolvedUserId = ResolveUserId(userId);
-        if (resolvedUserId <= 0)
-        {
-            return BadRequest(new { message = "Missing user id." });
-        }
+    private int GetUserId() => int.Parse(User.FindFirst("userId")!.Value);
 
-        var watchlist = await _context.Watchlists
-            .Where(w => w.UserId == resolvedUserId)
+    // GET: api/Portfolio/summary
+    [HttpGet("summary")]
+    public async Task<IActionResult> GetSummary()
+    {
+        var userId = GetUserId();
+
+        var stockIds = await _context.Watchlists
+            .Where(w => w.UserId == userId)
+            .Select(w => w.StockId)
             .ToListAsync();
 
-        if (watchlist.Count == 0)
-        {
-            return Ok(new { totalBalance = 0d, todayChange = 0d, todayChangePercent = 0d });
-        }
+        if (stockIds.Count == 0)
+            return Ok(new { totalBalance = 0m, todayChange = 0m, todayChangePercent = 0m });
 
-        var stockIds = watchlist.Select(w => w.StockId).Distinct().ToList();
-        var prices = await _context.PriceData
+        // Fetch the two most recent price entries per stock
+        var recentPrices = await _context.PriceData
             .Where(p => stockIds.Contains(p.StockId))
             .OrderByDescending(p => p.RecordedAt)
             .ToListAsync();
 
-        decimal currentTotal = 0m;
-        decimal previousTotal = 0m;
+        var top2PerStock = recentPrices
+            .GroupBy(p => p.StockId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Take(2).ToList()
+            );
 
-        foreach (var stockId in stockIds)
+        var totalBalance = 0m;
+        var previousTotal = 0m;
+
+        foreach (var (_, prices) in top2PerStock)
         {
-            var latestTwo = prices.Where(p => p.StockId == stockId).Take(2).ToList();
-            var current = latestTwo.FirstOrDefault()?.Price ?? 0m;
-            var previous = latestTwo.Skip(1).FirstOrDefault()?.Price ?? current;
-            currentTotal += current;
+            var latest = prices[0].Price;
+            var previous = prices.Count > 1 ? prices[1].Price : latest;
+
+            totalBalance += latest;
             previousTotal += previous;
         }
 
-        var todayChange = currentTotal - previousTotal;
-        var todayChangePercent = previousTotal == 0m ? 0m : (todayChange / previousTotal) * 100m;
+        var todayChange = totalBalance - previousTotal;
+        var todayChangePercent = previousTotal == 0m
+            ? 0m
+            : Math.Round(todayChange / previousTotal * 100, 2);
 
         return Ok(new
         {
-            totalBalance = (double)currentTotal,
-            todayChange = (double)todayChange,
-            todayChangePercent = (double)todayChangePercent
+            totalBalance = Math.Round(totalBalance, 2),
+            todayChange = Math.Round(todayChange, 2),
+            todayChangePercent
         });
-    }
-
-    private int ResolveUserId(int userIdFromQuery)
-    {
-        if (userIdFromQuery > 0)
-        {
-            return userIdFromQuery;
-        }
-
-        if (Request.Headers.TryGetValue("Authorization", out var authHeader))
-        {
-            var token = authHeader.ToString().Replace("Bearer ", string.Empty).Trim();
-            if (token.StartsWith("server-session-", StringComparison.OrdinalIgnoreCase) &&
-                int.TryParse(token["server-session-".Length..], out var tokenUserId))
-            {
-                return tokenUserId;
-            }
-        }
-
-        if (Request.Headers.TryGetValue("X-User-Id", out var headerValue) &&
-            int.TryParse(headerValue.ToString(), out var headerId))
-        {
-            return headerId;
-        }
-
-        return 0;
     }
 }

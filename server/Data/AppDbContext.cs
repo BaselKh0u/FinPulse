@@ -17,6 +17,8 @@ namespace Server.Data
         public DbSet<Alert> Alerts { get; set; }
         public DbSet<AlertEvent> AlertEvents { get; set; }
         public DbSet<Watchlist> Watchlists { get; set; }
+        public DbSet<UserPreferences> UserPreferences { get; set; }
+        public DbSet<DeviceToken> DeviceTokens { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -61,24 +63,29 @@ namespace Server.Data
                 .HasIndex(s => s.Symbol)
                 .IsUnique();
 
-            modelBuilder.Entity<PriceData>()
-                .HasIndex(p => new { p.StockId, p.RecordedAt })
+            // Unique index on User.Email
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.Email)
                 .IsUnique();
 
-            modelBuilder.Entity<Alert>()
-                .HasIndex(a => new { a.IsActive, a.StockId });
+            // User -> UserPreferences (one-to-one)
+            modelBuilder.Entity<UserPreferences>()
+                .HasOne(up => up.User)
+                .WithOne()
+                .HasForeignKey<UserPreferences>(up => up.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
 
-            modelBuilder.Entity<AlertEvent>()
-                .Property(ae => ae.ConditionType)
-                .HasConversion<string>();
+            // User -> DeviceTokens (one-to-many)
+            modelBuilder.Entity<DeviceToken>()
+                .HasOne(dt => dt.User)
+                .WithMany()
+                .HasForeignKey(dt => dt.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
 
-            modelBuilder.Entity<AlertEvent>()
-                .Property(ae => ae.TriggerValue)
-                .HasColumnType("decimal(18,2)");
-
-            modelBuilder.Entity<AlertEvent>()
-                .HasIndex(ae => new { ae.UserId, ae.CreatedAt });
-
+            // Unique index on DeviceToken.ExpoPushToken
+            modelBuilder.Entity<DeviceToken>()
+                .HasIndex(dt => dt.ExpoPushToken)
+                .IsUnique();
         }
     }
 }
