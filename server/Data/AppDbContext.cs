@@ -16,6 +16,8 @@ namespace Server.Data
         public DbSet<ConfidenceScore> ConfidenceScores { get; set; }
         public DbSet<Alert> Alerts { get; set; }
         public DbSet<Watchlist> Watchlists { get; set; }
+        public DbSet<UserPreferences> UserPreferences { get; set; }
+        public DbSet<DeviceToken> DeviceTokens { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -44,6 +46,29 @@ namespace Server.Data
                 .HasIndex(s => s.Symbol)
                 .IsUnique();
 
+            // Unique index on User.Email
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.Email)
+                .IsUnique();
+
+            // User -> UserPreferences (one-to-one)
+            modelBuilder.Entity<UserPreferences>()
+                .HasOne(up => up.User)
+                .WithOne()
+                .HasForeignKey<UserPreferences>(up => up.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // User -> DeviceTokens (one-to-many)
+            modelBuilder.Entity<DeviceToken>()
+                .HasOne(dt => dt.User)
+                .WithMany()
+                .HasForeignKey(dt => dt.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Unique index on DeviceToken.ExpoPushToken
+            modelBuilder.Entity<DeviceToken>()
+                .HasIndex(dt => dt.ExpoPushToken)
+                .IsUnique();
         }
     }
 }
