@@ -11,7 +11,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StockDetails, StockNewsItem } from "@/models/Stock";
-import { getStockDetails } from "@/services/stock.service";
+import { getStockDetails, getStockHistory } from "@/services/stock.service";
 import { Colors, Fonts } from "@/theme";
 
 type TimeRange = "1D" | "1W" | "1M" | "3M" | "1Y" | "ALL";
@@ -108,6 +108,7 @@ export default function StockDetailScreen() {
   const [details, setDetails] = useState<StockDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedRange, setSelectedRange] = useState<TimeRange>("1M");
+  const [chartData, setChartData] = useState<number[]>([]);
   const [inWatchlist, setInWatchlist] = useState(false);
 
   useEffect(() => {
@@ -116,11 +117,24 @@ export default function StockDetailScreen() {
         setLoading(true);
         const data = await getStockDetails(symbol ?? "");
         setDetails(data);
+        setChartData(data.chartData);
       } finally {
         setLoading(false);
       }
     })();
   }, [symbol]);
+
+  useEffect(() => {
+    if (!symbol) return;
+    (async () => {
+      try {
+        const series = await getStockHistory(symbol, selectedRange);
+        setChartData(series);
+      } catch {
+        // keep existing data if range request fails
+      }
+    })();
+  }, [symbol, selectedRange]);
 
   const isUp = (details?.changePercent ?? 0) >= 0;
   const priceColor = isUp ? Colors.success : Colors.danger;
@@ -241,7 +255,7 @@ export default function StockDetailScreen() {
 
         {/* Chart */}
         <View style={styles.chartCard}>
-          <MiniChart data={details.chartData} color={priceColor} width={320} height={160} />
+          <MiniChart data={chartData} color={priceColor} width={320} height={160} />
           <View style={styles.rangeRow}>
             {TIME_RANGES.map((r) => (
               <Pressable
@@ -334,6 +348,17 @@ export default function StockDetailScreen() {
               </View>
             </View>
           )}
+        </View>
+
+        <Text style={styles.sectionTitle}>Stability Score</Text>
+        <View style={styles.stabilityCard}>
+          <Text style={styles.stabilityScore}>{details.stabilityScore.toFixed(0)}/100</Text>
+          <Text style={styles.stabilityDescription}>
+            Higher means lower recent price volatility and more stable movement.
+          </Text>
+          <Text style={styles.confidenceText}>
+            Confidence: {(details.confidenceScore ?? 50).toFixed(0)}/100 (data trustworthiness)
+          </Text>
         </View>
 
         {/* Latest News */}
@@ -472,6 +497,13 @@ const styles = StyleSheet.create({
   newsTitle: { fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.semiBold, lineHeight: 21, marginBottom: 10 },
   newsSentBadge: { alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   newsSentText: { fontSize: 11, fontFamily: Fonts.bold },
+  stabilityCard: {
+    backgroundColor: Colors.card, borderRadius: 18, padding: 20,
+    shadowColor: Colors.shadow, shadowOpacity: 0.03, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1,
+  },
+  stabilityScore: { fontSize: 34, color: Colors.primary, fontFamily: Fonts.bold },
+  stabilityDescription: { marginTop: 6, fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.medium, lineHeight: 19 },
+  confidenceText: { marginTop: 8, fontSize: 13, color: Colors.textPrimary, fontFamily: Fonts.semiBold },
 
   aboutCard: {
     backgroundColor: Colors.card, borderRadius: 18, padding: 20,

@@ -1,5 +1,6 @@
 import { apiRequest, USE_MOCK } from "./api";
 import { User, UserPreferences } from "@/models/User";
+import { clearSession, getSessionUserId } from "./session";
 
 const mockUser: User = {
   id: "mock-user-1",
@@ -23,12 +24,14 @@ let mockPrefs: UserPreferences = {
 
 export async function getUserProfile(): Promise<User> {
   if (USE_MOCK) return { ...mockUser };
-  return apiRequest<User>("/user/profile");
+  const userId = getSessionUserId();
+  return apiRequest<User>(`/user/profile?userId=${userId ?? 0}`);
 }
 
 export async function getPreferences(): Promise<UserPreferences> {
   if (USE_MOCK) return { ...mockPrefs };
-  return apiRequest<UserPreferences>("/user/preferences");
+  const userId = getSessionUserId();
+  return apiRequest<UserPreferences>(`/user/preferences?userId=${userId ?? 0}`);
 }
 
 export async function updatePreferences(patch: Partial<UserPreferences>): Promise<UserPreferences> {
@@ -36,7 +39,8 @@ export async function updatePreferences(patch: Partial<UserPreferences>): Promis
     mockPrefs = { ...mockPrefs, ...patch };
     return { ...mockPrefs };
   }
-  return apiRequest<UserPreferences>("/user/preferences", {
+  const userId = getSessionUserId();
+  return apiRequest<UserPreferences>(`/user/preferences?userId=${userId ?? 0}`, {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
@@ -47,13 +51,15 @@ export async function updateProfile(patch: Partial<Pick<User, "firstName" | "las
     Object.assign(mockUser, patch);
     return { ...mockUser };
   }
-  return apiRequest<User>("/user/profile", {
+  const userId = getSessionUserId();
+  return apiRequest<User>(`/user/profile?userId=${userId ?? 0}`, {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
 }
 
 export async function logout(): Promise<void> {
+  await clearSession();
   if (USE_MOCK) return;
   await apiRequest("/auth/logout", { method: "POST" });
 }

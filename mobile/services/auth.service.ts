@@ -1,8 +1,10 @@
 import { apiRequest, USE_MOCK } from "./api";
+import { clearSession, setSession } from "./session";
 
 export interface LoginRequest {
   email: string;
   password: string;
+  stayLoggedIn?: boolean;
 }
 
 export interface RegisterRequest {
@@ -14,7 +16,7 @@ export interface RegisterRequest {
 
 export interface AuthResponse {
   token: string;
-  userId: string;
+  userId: number;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -24,13 +26,22 @@ export async function login(data: LoginRequest): Promise<AuthResponse> {
     if (!EMAIL_REGEX.test(data.email) || data.password.length < 6) {
       throw new Error("Invalid credentials");
     }
-    return { token: "mock-token-123", userId: "mock-user-1" };
+    const session = { token: "mock-token-123", userId: 1 };
+    await setSession(session.userId, session.token, Boolean(data.stayLoggedIn));
+    return session;
   }
 
-  return apiRequest<AuthResponse>("/auth/login", {
+  const response = await apiRequest<{ userId: number; message: string; fullName?: string }>("/auth/login", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({
+      email: data.email,
+      passwordHash: data.password,
+    }),
   });
+
+  const session = { token: "server-session", userId: response.userId };
+  await setSession(session.userId, session.token, Boolean(data.stayLoggedIn));
+  return session;
 }
 
 export async function register(data: RegisterRequest): Promise<AuthResponse> {
@@ -39,13 +50,22 @@ export async function register(data: RegisterRequest): Promise<AuthResponse> {
     if (data.password.length < 6) throw new Error("Password too short");
     if (data.firstName.trim().length < 2) throw new Error("First name too short");
     if (data.lastName.trim().length < 2) throw new Error("Last name too short");
-    return { token: "mock-token-456", userId: "mock-user-2" };
+    const session = { token: "mock-token-456", userId: 2 };
+    await setSession(session.userId, session.token, false);
+    return session;
   }
 
-  return apiRequest<AuthResponse>("/auth/register", {
+  const response = await apiRequest<{ message: string }>("/auth/register", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify({
+      fullName: `${data.firstName} ${data.lastName}`.trim(),
+      email: data.email,
+      passwordHash: data.password,
+    }),
   });
+
+  // Register endpoint currently returns message only, so user logs in afterward.
+  return { token: "server-session", userId: 0 };
 }
 
 export async function forgotPassword(email: string): Promise<void> {
@@ -54,8 +74,10 @@ export async function forgotPassword(email: string): Promise<void> {
     return;
   }
 
-  await apiRequest("/auth/forgot-password", {
-    method: "POST",
-    body: JSON.stringify({ email }),
-  });
+  // Backend forgot-password endpoint does not exist yet.
+  return;
+}
+
+export function logoutLocalSession() {
+  void clearSession();
 }

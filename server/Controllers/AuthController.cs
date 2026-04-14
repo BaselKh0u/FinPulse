@@ -47,8 +47,15 @@ public class AuthController : ControllerBase
         return Ok(new
         {
             message = "Login successful.",
+            token = "server-session",
             userId = user.UserId,
             fullName = user.FullName
         });
+    }
+
+    [HttpPost("logout")]
+    public IActionResult Logout()
+    {
+        return Ok(new { message = "Logged out." });
     }
 }

@@ -5,6 +5,7 @@ import {
   Platform,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -24,6 +25,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [stayLoggedIn, setStayLoggedIn] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const canSubmit = useMemo(
@@ -35,7 +37,7 @@ export default function LoginScreen() {
     if (!canSubmit) return;
     setLoading(true);
     try {
-      await login({ email: email.trim(), password });
+      await login({ email: email.trim(), password, stayLoggedIn });
       router.replace("/(tabs)");
     } catch (err) {
       Alert.alert("Login failed", err instanceof Error ? err.message : "Please try again.");
@@ -106,6 +108,16 @@ export default function LoginScreen() {
           >
             <Text style={styles.forgot}>Forgot password?</Text>
           </Pressable>
+
+          <View style={styles.stayRow}>
+            <Text style={styles.stayLabel}>Stay logged in</Text>
+            <Switch
+              value={stayLoggedIn}
+              onValueChange={setStayLoggedIn}
+              trackColor={{ false: Colors.divider, true: Colors.successLight }}
+              thumbColor={stayLoggedIn ? Colors.success : Colors.textTertiary}
+            />
+          </View>
 
           <Pressable
             onPress={onLogin}
@@ -195,6 +207,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: Fonts.semiBold,
   },
+  stayRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  stayLabel: { color: Colors.textSecondary, fontSize: 14, fontFamily: Fonts.medium },
 
   primaryBtn: {
     marginTop: 20,

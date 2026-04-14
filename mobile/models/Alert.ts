@@ -2,6 +2,7 @@ export type AlertType = "price_above" | "price_below" | "volatility" | "earnings
 
 export interface Alert {
   id: string;
+  stockId?: number;
   symbol: string;
   type: AlertType;
   targetPrice?: number;

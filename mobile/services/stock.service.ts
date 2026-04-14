@@ -27,7 +27,7 @@ let mockStocks: Stock[] = [
 
 export async function getStocks(): Promise<Stock[]> {
   if (USE_MOCK) return Promise.resolve(mockStocks);
-  return apiRequest<Stock[]>("/stocks");
+  return apiRequest<Stock[]>("/stock");
 }
 
 export async function addStock(newStock: Stock): Promise<void> {
@@ -39,7 +39,7 @@ export async function addStock(newStock: Stock): Promise<void> {
     return;
   }
 
-  await apiRequest("/stocks", {
+  await apiRequest("/stock", {
     method: "POST",
     body: JSON.stringify(newStock),
   });
@@ -53,7 +53,7 @@ export async function removeStock(symbol: string): Promise<void> {
     return;
   }
 
-  await apiRequest(`/stocks/${symbol}`, { method: "DELETE" });
+  await apiRequest(`/stock/${symbol}`, { method: "DELETE" });
 }
 
 const allAvailableStocks: Stock[] = [
@@ -80,7 +80,7 @@ export async function searchStocks(query: string): Promise<Stock[]> {
     );
   }
 
-  return apiRequest<Stock[]>(`/stocks/search?q=${encodeURIComponent(query)}`);
+  return apiRequest<Stock[]>(`/stock/search?q=${encodeURIComponent(query)}`);
 }
 
 function generateChart(base: number, points = 30): number[] {
@@ -139,6 +139,7 @@ const defaultDetails: Omit<StockDetails, keyof Stock> = {
   description: "Detailed company information will be available when connected to the backend.",
   sector: "Technology", industry: "N/A",
   employees: "N/A", headquarters: "N/A",
+  stabilityScore: 50,
   keyStats: { open: 0, high: 0, low: 0, close: 0, volume: "N/A", avgVolume: "N/A", marketCap: "N/A", peRatio: null, week52High: 0, week52Low: 0, dividend: "N/A", beta: 1.0 },
   sentiment: { bullish: 33, bearish: 33, neutral: 34, score: 0, mentions: 0, trending: false },
   news: [],
@@ -156,5 +157,14 @@ export async function getStockDetails(symbol: string): Promise<StockDetails> {
     return { ...base, ...extra };
   }
 
-  return apiRequest<StockDetails>(`/stocks/${symbol}/details`);
+  return apiRequest<StockDetails>(`/stock/${symbol}/details`);
+}
+
+export async function getStockHistory(symbol: string, range: string): Promise<number[]> {
+  if (USE_MOCK) {
+    const base = allAvailableStocks.find((s) => s.symbol.toUpperCase() === symbol.toUpperCase())?.price ?? 100;
+    return generateChart(base, 40);
+  }
+
+  return apiRequest<number[]>(`/stock/${symbol}/history?range=${encodeURIComponent(range)}`);
 }

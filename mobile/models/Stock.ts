@@ -1,4 +1,5 @@
 export interface Stock {
+  stockId?: number;
   symbol: string;
   name: string;
   price: number;
@@ -45,6 +46,8 @@ export interface StockDetails extends Stock {
   industry: string;
   employees: string;
   headquarters: string;
+  stabilityScore: number;
+  confidenceScore?: number;
   keyStats: StockKeyStats;
   sentiment: StockSentiment;
   news: StockNewsItem[];

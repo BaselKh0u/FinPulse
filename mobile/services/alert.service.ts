@@ -1,5 +1,6 @@
 import { apiRequest, USE_MOCK } from "./api";
 import { Alert } from "../models/Alert";
+import { getSessionUserId } from "./session";
 
 let mockAlerts: Alert[] = [
   {
@@ -41,7 +42,31 @@ let mockAlerts: Alert[] = [
 
 export async function getAlerts(): Promise<Alert[]> {
   if (USE_MOCK) return [...mockAlerts];
-  return apiRequest<Alert[]>("/alerts");
+
+  const userId = getSessionUserId();
+  if (!userId) {
+    return [];
+  }
+
+  const rows = await apiRequest<any[]>(`/alerts/user/${userId}`);
+  return rows.map((r) => ({
+    id: String(r.alertId),
+    stockId: r.stockId,
+    symbol: String(r.symbol ?? r.stockId),
+    type:
+      r.conditionType === "PriceTarget"
+        ? r.direction === "Below"
+          ? "price_below"
+          : "price_above"
+        : r.conditionType === "PercentVolatility"
+          ? "volatility"
+          : "earnings",
+    targetPrice: r.targetPrice ?? undefined,
+    threshold: r.percentageThreshold ?? undefined,
+    description: r.message || "Alert",
+    isActive: Boolean(r.isActive),
+    createdAt: r.createdAt,
+  }));
 }
 
 export async function createAlert(
@@ -57,10 +82,35 @@ export async function createAlert(
     return newAlert;
   }
 
-  return apiRequest<Alert>("/alerts", {
+  const conditionType =
+    alert.type === "volatility"
+      ? "PercentVolatility"
+      : alert.type === "earnings"
+        ? "ReportReleased"
+        : "PriceTarget";
+  const direction = alert.type === "price_below" ? "Below" : "Above";
+
+  const response = await apiRequest<{ alertId: number }>("/alerts", {
     method: "POST",
-    body: JSON.stringify(alert),
+    body: JSON.stringify({
+      userId: getSessionUserId() ?? 0,
+      stockId: alert.stockId ?? 0,
+      symbol: alert.symbol,
+      conditionType,
+      direction,
+      targetPrice: alert.targetPrice,
+      percentageThreshold: alert.threshold,
+      volatilityWindowMinutes: alert.type === "volatility" ? 60 : null,
+      message: alert.description,
+      cooldownMinutes: 60,
+    }),
   });
+
+  return {
+    ...alert,
+    id: String(response.alertId),
+    createdAt: new Date().toISOString(),
+  };
 }
 
 export async function toggleAlert(alertId: string, isActive: boolean): Promise<void> {
@@ -70,10 +120,9 @@ export async function toggleAlert(alertId: string, isActive: boolean): Promise<v
     return;
   }
 
-  await apiRequest<void>(`/alerts/${alertId}/toggle`, {
-    method: "PATCH",
-    body: JSON.stringify({ isActive }),
-  });
+  if (!isActive) {
+    await apiRequest<void>(`/alerts/${alertId}/deactivate`, { method: "POST" });
+  }
 }
 
 export async function deleteAlert(alertId: string): Promise<void> {
@@ -82,5 +131,5 @@ export async function deleteAlert(alertId: string): Promise<void> {
     return;
   }
 
-  await apiRequest<void>(`/alerts/${alertId}`, { method: "DELETE" });
+  await apiRequest<void>(`/alerts/${alertId}/deactivate`, { method: "POST" });
 }

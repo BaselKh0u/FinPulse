@@ -71,6 +71,7 @@ export default function CreateAlertScreen() {
     setSaving(true);
     try {
       await createAlert({
+        stockId: selectedStock.stockId,
         symbol: selectedStock.symbol,
         type: selectedType,
         targetPrice: selectedType === "price_above" || selectedType === "price_below" ? Number(targetValue) : undefined,
