@@ -18,5 +18,10 @@ namespace Server.Models
         [MinLength(6, ErrorMessage = "Password must be at least 6 characters long")]
         public string PasswordHash { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public string Phone { get; set; } = string.Empty;
+        public string AvatarUrl { get; set; } = string.Empty;
+        public bool IsVerified { get; set; } = false;
+        public string EmailVerificationToken { get; set; } = string.Empty;
+        public DateTime? EmailVerificationTokenExpiry { get; set; }
     }
 }
