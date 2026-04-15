@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,6 +19,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
+import * as Haptics from "expo-haptics";
 import { User, UserPreferences } from "@/models/User";
 import {
   getUserProfile,
@@ -24,6 +30,25 @@ import {
   logout,
 } from "@/services/user.service";
 import { Colors, Fonts } from "@/theme";
+import { setAvatarUri as setGlobalAvatar } from "@/stores/avatar.store";
+import { useTheme } from "@/stores/theme.store";
+import { setCurrency as setGlobalCurrency } from "@/stores/currency.store";
+import { setBiometricEnabled } from "@/stores/biometric.store";
+import * as LocalAuthentication from "expo-local-authentication";
+import { authenticateBiometricFirst, biometricErrorMessage } from "@/lib/authenticateBiometrics";
+import {
+  clearBiometricReloginSession,
+  getAccessToken,
+  getStoredUserId,
+  stashSessionForBiometricRelogin,
+} from "@/stores/auth.storage";
+import {
+  registerForPushNotifications,
+  setAlertSoundEnabled,
+  setPushEnabled,
+} from "@/services/notification.service";
+import { setRefreshInterval as setGlobalRefresh } from "@/stores/refresh.store";
+
 
 const CURRENCIES = ["USD", "EUR", "GBP", "ILS", "JPY"];
 const REFRESH_OPTIONS: { key: UserPreferences["refreshInterval"]; label: string }[] = [
@@ -37,8 +62,12 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 }
 
+let styles = createStyles();
+
 export default function ProfileScreen() {
   const router = useRouter();
+  const { isDark, toggleDark } = useTheme();
+  styles = useMemo(createStyles, [isDark]);
 
   const [user, setUser] = useState<User | null>(null);
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
@@ -50,8 +79,12 @@ export default function ProfileScreen() {
   const [editPhone, setEditPhone] = useState("");
   const [editSaving, setEditSaving] = useState(false);
 
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [currencyModal, setCurrencyModal] = useState(false);
   const [refreshModal, setRefreshModal] = useState(false);
+  const [biometricBusy, setBiometricBusy] = useState(false);
+
+  const editScrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     const [u, p] = await Promise.all([getUserProfile(), getPreferences()]);
@@ -67,8 +100,56 @@ export default function ProfileScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  function pickAvatar() {
+    Alert.alert("Change Profile Photo", "Choose a source", [
+      {
+        text: "Camera",
+        onPress: async () => {
+          const { status } = await ImagePicker.requestCameraPermissionsAsync();
+          if (status !== "granted") {
+            Alert.alert("Permission Required", "Camera access is needed to take a profile photo.");
+            return;
+          }
+          const result = await ImagePicker.launchCameraAsync({
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+          });
+          if (!result.canceled && result.assets[0]) {
+            setAvatarUri(result.assets[0].uri);
+            setGlobalAvatar(result.assets[0].uri);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        },
+      },
+      {
+        text: "Gallery",
+        onPress: async () => {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (status !== "granted") {
+            Alert.alert("Permission Required", "Photo library access is needed to select a profile photo.");
+            return;
+          }
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ["images"],
+            allowsEditing: true,
+            aspect: [1, 1],
+            quality: 0.8,
+          });
+          if (!result.canceled && result.assets[0]) {
+            setAvatarUri(result.assets[0].uri);
+            setGlobalAvatar(result.assets[0].uri);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+
   async function togglePref(key: keyof UserPreferences, value: boolean) {
     if (!prefs) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const updated = await updatePreferences({ [key]: value });
     setPrefs(updated);
   }
@@ -102,12 +183,59 @@ export default function ProfileScreen() {
     setCurrencyModal(false);
     const updated = await updatePreferences({ currency: c });
     setPrefs(updated);
+    await setGlobalCurrency(c);
   }
 
   async function selectRefresh(r: UserPreferences["refreshInterval"]) {
     setRefreshModal(false);
+    setGlobalRefresh(r);
     const updated = await updatePreferences({ refreshInterval: r });
     setPrefs(updated);
+  }
+
+  async function handleBiometricToggle(enable: boolean) {
+    setBiometricBusy(true);
+    try {
+      if (enable) {
+        const compatible = await LocalAuthentication.hasHardwareAsync();
+        const enrolled = await LocalAuthentication.isEnrolledAsync();
+        if (!compatible || !enrolled) {
+          Alert.alert(
+            "Not available",
+            "This device doesn’t support biometric login, or no Face ID / fingerprint is enrolled. Set one up in system Settings."
+          );
+          return;
+        }
+        const result = await authenticateBiometricFirst(
+          "Verify your identity to enable biometric login"
+        );
+        if (!result.success) {
+          if (result.error !== "user_cancel") {
+            const msg = biometricErrorMessage(result.error);
+            if (msg) {
+              Alert.alert("Biometric verification", msg);
+            }
+          }
+          return;
+        }
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        await clearBiometricReloginSession();
+      }
+      await setBiometricEnabled(enable);
+      const updated = await updatePreferences({ biometricLogin: enable });
+      setPrefs(updated);
+      if (enable) {
+        const t = await getAccessToken();
+        const u = await getStoredUserId();
+        if (t && u) await stashSessionForBiometricRelogin(t, u);
+      }
+    } catch (e) {
+      Alert.alert("Couldn’t update setting", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setBiometricBusy(false);
+    }
   }
 
   function onLogout() {
@@ -147,7 +275,11 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* Header */}
         <View style={styles.header}>
@@ -156,9 +288,18 @@ export default function ProfileScreen() {
 
         {/* User Card */}
         <View style={styles.userCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{initials}</Text>
-          </View>
+          <Pressable onPress={pickAvatar} style={styles.avatarWrap}>
+            {avatarUri ? (
+              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{initials}</Text>
+              </View>
+            )}
+            <View style={styles.cameraIcon}>
+              <Ionicons name="camera" size={14} color={Colors.white} />
+            </View>
+          </Pressable>
           <View style={styles.userInfo}>
             <Text style={styles.userName}>{user.firstName} {user.lastName}</Text>
             <Text style={styles.userEmail}>{user.email}</Text>
@@ -189,6 +330,13 @@ export default function ProfileScreen() {
           <SettingsRow
             icon="shield-checkmark-outline"
             label="Verification Status"
+            onPress={() => {
+              if (user.isVerified) {
+                Alert.alert("Verified", "Your account has been verified by FinPulse.");
+              } else {
+                Alert.alert("Verification Pending", "Complete your profile and verify your email to get the verified badge. This is handled by the backend once your identity is confirmed.");
+              }
+            }}
             trailing={
               <View style={[styles.statusChip, user.isVerified ? styles.statusVerified : styles.statusPending]}>
                 <Text style={[styles.statusText, { color: user.isVerified ? Colors.success : Colors.warning }]}>
@@ -202,17 +350,32 @@ export default function ProfileScreen() {
         {/* Preferences Section */}
         <Text style={styles.sectionLabel}>PREFERENCES</Text>
         <View style={styles.section}>
-          <SettingsToggle icon="notifications-outline" label="Push Notifications" value={prefs.pushNotifications}
-            onToggle={(v) => togglePref("pushNotifications", v)} />
+          <SettingsToggle
+            icon="notifications-outline"
+            label="Push Notifications"
+            value={prefs.pushNotifications}
+            onToggle={async (v) => {
+              if (v) {
+                await registerForPushNotifications({ silent: false });
+              }
+              setPushEnabled(v);
+              await togglePref("pushNotifications", v);
+            }}
+          />
           <Divider />
           <SettingsToggle icon="volume-high-outline" label="Alert Sound" value={prefs.alertSound}
-            onToggle={(v) => togglePref("alertSound", v)} />
+            onToggle={async (v) => { setAlertSoundEnabled(v); await togglePref("alertSound", v); }} />
           <Divider />
-          <SettingsToggle icon="finger-print-outline" label="Biometric Login" value={prefs.biometricLogin}
-            onToggle={(v) => togglePref("biometricLogin", v)} />
+          <SettingsToggle
+            icon="finger-print-outline"
+            label="Biometric Login"
+            value={prefs.biometricLogin}
+            disabled={biometricBusy}
+            onToggle={handleBiometricToggle}
+          />
           <Divider />
-          <SettingsToggle icon="moon-outline" label="Dark Mode" value={prefs.darkMode}
-            onToggle={(v) => togglePref("darkMode", v)} />
+          <SettingsToggle icon="moon-outline" label="Dark Mode" value={isDark}
+            onToggle={() => { toggleDark(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }} />
         </View>
 
         {/* Data Section */}
@@ -233,19 +396,26 @@ export default function ProfileScreen() {
         <Text style={styles.sectionLabel}>SUPPORT</Text>
         <View style={styles.section}>
           <SettingsRow icon="help-circle-outline" label="Help Center" onPress={() =>
-            Linking.openURL("https://finpulse.io/help")} />
+            router.push("/info/help")} />
           <Divider />
-          <SettingsRow icon="chatbubble-ellipses-outline" label="Contact Support" onPress={() =>
-            Linking.openURL("mailto:support@finpulse.io")} />
+          <SettingsRow icon="chatbubble-ellipses-outline" label="Contact Support" onPress={() => {
+            Linking.openURL("mailto:support@finpulse.io?subject=FinPulse%20Support%20Request").catch(() =>
+              Alert.alert("Contact Support", "Email us at support@finpulse.io and we'll get back to you within 24 hours."));
+          }} />
           <Divider />
-          <SettingsRow icon="star-outline" label="Rate FinPulse" onPress={() =>
-            Alert.alert("Thanks!", "We appreciate your support.")} />
+          <SettingsRow icon="star-outline" label="Rate FinPulse" onPress={() => {
+            const storeUrl = Platform.OS === "ios"
+              ? "https://apps.apple.com/app/finpulse/id0000000000"
+              : "https://play.google.com/store/apps/details?id=com.finpulse.app";
+            Linking.openURL(storeUrl).catch(() =>
+              Alert.alert("Thanks!", "We appreciate your support. The store link will be available once the app is published."));
+          }} />
           <Divider />
           <SettingsRow icon="document-text-outline" label="Privacy Policy" onPress={() =>
-            Linking.openURL("https://finpulse.io/privacy")} />
+            router.push("/info/privacy")} />
           <Divider />
           <SettingsRow icon="reader-outline" label="Terms of Service" onPress={() =>
-            Linking.openURL("https://finpulse.io/terms")} />
+            router.push("/info/terms")} />
         </View>
 
         {/* Danger Zone */}
@@ -261,34 +431,53 @@ export default function ProfileScreen() {
       </ScrollView>
 
       {/* Edit Profile Modal */}
-      <Modal visible={editModal} transparent animationType="slide">
-        <Pressable style={styles.modalOverlay} onPress={() => setEditModal(false)} />
-        <View style={styles.modalSheet}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>Edit Profile</Text>
+      <Modal visible={editModal} transparent animationType="slide" onRequestClose={() => setEditModal(false)}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
+        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)" }}
+            onPress={() => { Keyboard.dismiss(); setEditModal(false); }}
+          />
+          <View style={styles.editSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Edit Profile</Text>
+            <ScrollView
+              ref={editScrollRef}
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 20 }}
+            >
+              <Text style={styles.fieldLabel}>First Name</Text>
+              <TextInput style={styles.fieldInput} value={editFirst} onChangeText={setEditFirst}
+                placeholder="First name" placeholderTextColor={Colors.placeholder}
+                onFocus={() => setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 150)} />
 
-          <Text style={styles.fieldLabel}>First Name</Text>
-          <TextInput style={styles.fieldInput} value={editFirst} onChangeText={setEditFirst}
-            placeholder="First name" placeholderTextColor={Colors.placeholder} />
+              <Text style={styles.fieldLabel}>Last Name</Text>
+              <TextInput style={styles.fieldInput} value={editLast} onChangeText={setEditLast}
+                placeholder="Last name" placeholderTextColor={Colors.placeholder}
+                onFocus={() => setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 150)} />
 
-          <Text style={styles.fieldLabel}>Last Name</Text>
-          <TextInput style={styles.fieldInput} value={editLast} onChangeText={setEditLast}
-            placeholder="Last name" placeholderTextColor={Colors.placeholder} />
+              <Text style={styles.fieldLabel}>Phone (optional)</Text>
+              <TextInput style={styles.fieldInput} value={editPhone} onChangeText={setEditPhone}
+                placeholder="+972 54-XXX-XXXX" placeholderTextColor={Colors.placeholder}
+                keyboardType="phone-pad"
+                onFocus={() => setTimeout(() => editScrollRef.current?.scrollToEnd({ animated: true }), 150)} />
 
-          <Text style={styles.fieldLabel}>Phone (optional)</Text>
-          <TextInput style={styles.fieldInput} value={editPhone} onChangeText={setEditPhone}
-            placeholder="+972 54-XXX-XXXX" placeholderTextColor={Colors.placeholder}
-            keyboardType="phone-pad" />
-
-          <View style={styles.modalBtns}>
-            <Pressable style={styles.cancelBtn} onPress={() => setEditModal(false)}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </Pressable>
-            <Pressable style={styles.saveBtn} onPress={saveProfile} disabled={editSaving}>
-              <Text style={styles.saveBtnText}>{editSaving ? "Saving..." : "Save"}</Text>
-            </Pressable>
+              <View style={styles.modalBtns}>
+                <Pressable style={styles.cancelBtn} onPress={() => { Keyboard.dismiss(); setEditModal(false); }}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </Pressable>
+                <Pressable style={styles.saveBtn} onPress={saveProfile} disabled={editSaving}>
+                  <Text style={styles.saveBtnText}>{editSaving ? "Saving..." : "Save"}</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Currency Picker */}
@@ -330,30 +519,39 @@ export default function ProfileScreen() {
 function SettingsRow({ icon, label, trailing, danger, onPress }: {
   icon: string; label: string; trailing?: React.ReactNode; danger?: boolean; onPress?: () => void;
 }) {
+  const { isDark } = useTheme();
+  const labelColor = danger ? Colors.danger : (isDark ? "#FFFFFF" : Colors.textPrimary);
   return (
     <Pressable style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]} onPress={onPress}>
-      <View style={[styles.rowIconWrap, danger && { backgroundColor: Colors.dangerLight }]}>
-        <Ionicons name={icon as any} size={20} color={danger ? Colors.danger : Colors.textSecondary} />
+      <View style={[styles.rowIconWrap, { backgroundColor: danger ? Colors.dangerLight : (isDark ? "#1E2D44" : "#E9EDF6") }]}>
+        <Ionicons name={icon as any} size={20} color={danger ? Colors.danger : Colors.accent} />
       </View>
-      <Text style={[styles.rowLabel, danger && { color: Colors.danger }]}>{label}</Text>
+      <Text style={[styles.rowLabel, { color: labelColor }]}>{label}</Text>
       <View style={styles.rowTrailing}>
-        {trailing ?? <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />}
+        {trailing ?? <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />}
       </View>
     </Pressable>
   );
 }
 
-function SettingsToggle({ icon, label, value, onToggle }: {
-  icon: string; label: string; value: boolean; onToggle: (v: boolean) => void;
+function SettingsToggle({ icon, label, value, onToggle, disabled }: {
+  icon: string;
+  label: string;
+  value: boolean;
+  onToggle: (v: boolean) => void;
+  disabled?: boolean;
 }) {
+  const { isDark } = useTheme();
+  const labelColor = isDark ? "#FFFFFF" : Colors.textPrimary;
   return (
     <View style={styles.row}>
-      <View style={styles.rowIconWrap}>
-        <Ionicons name={icon as any} size={20} color={Colors.textSecondary} />
+      <View style={[styles.rowIconWrap, { backgroundColor: isDark ? "#1E2D44" : "#E9EDF6" }]}>
+        <Ionicons name={icon as any} size={20} color={Colors.accent} />
       </View>
-      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={[styles.rowLabel, { color: labelColor }]}>{label}</Text>
       <Switch
         value={value}
+        disabled={disabled}
         onValueChange={onToggle}
         trackColor={{ false: Colors.divider, true: Colors.successLight }}
         thumbColor={value ? Colors.success : Colors.textTertiary}
@@ -363,12 +561,20 @@ function SettingsToggle({ icon, label, value, onToggle }: {
 }
 
 function Divider() {
-  return <View style={styles.divider} />;
+  const { isDark } = useTheme();
+  return (
+    <View
+      style={[
+        styles.divider,
+        isDark && { backgroundColor: "rgba(255,255,255,0.04)" },
+      ]}
+    />
+  );
 }
 
 /* ─── Styles ─── */
 
-const styles = StyleSheet.create({
+function createStyles() { return StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   scroll: { paddingBottom: 40 },
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -382,8 +588,15 @@ const styles = StyleSheet.create({
     shadowColor: Colors.shadow, shadowOpacity: 0.04, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 2,
   },
   avatar: {
-    width: 64, height: 64, borderRadius: 32, backgroundColor: Colors.primary,
-    alignItems: "center", justifyContent: "center", marginRight: 16,
+    width: 64, height: 64, borderRadius: 32, backgroundColor: Colors.logoBox,
+    alignItems: "center", justifyContent: "center",
+  },
+  avatarWrap: { position: "relative", marginRight: 16 },
+  avatarImage: { width: 64, height: 64, borderRadius: 32 },
+  cameraIcon: {
+    position: "absolute", bottom: -2, right: -2, width: 24, height: 24, borderRadius: 12,
+    backgroundColor: Colors.accent, alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: Colors.card,
   },
   avatarText: { fontSize: 24, color: Colors.white, fontFamily: Fonts.bold },
   userInfo: { flex: 1 },
@@ -410,7 +623,7 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 15,
   },
   rowIconWrap: {
-    width: 36, height: 36, borderRadius: 10, backgroundColor: Colors.iconBackground,
+    width: 36, height: 36, borderRadius: 10,
     alignItems: "center", justifyContent: "center", marginRight: 14,
   },
   rowLabel: { flex: 1, fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.medium },
@@ -432,9 +645,14 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
   modalSheet: {
-    backgroundColor: Colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    backgroundColor: Colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12, paddingBottom: 40,
     position: "absolute", bottom: 0, left: 0, right: 0,
+  },
+  editSheet: {
+    backgroundColor: Colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 40,
+    maxHeight: "80%",
   },
   modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.divider, alignSelf: "center", marginBottom: 18 },
   modalTitle: { fontSize: 22, color: Colors.textPrimary, fontFamily: Fonts.bold, marginBottom: 20 },
@@ -464,4 +682,4 @@ const styles = StyleSheet.create({
   },
   pickerText: { fontSize: 16, color: Colors.textPrimary, fontFamily: Fonts.medium },
   pickerActive: { color: Colors.accent, fontFamily: Fonts.bold },
-});
+}); }

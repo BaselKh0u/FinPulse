@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react";
+import { login } from "@/services/auth.service";
+import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -11,36 +17,161 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { login } from "@/services/auth.service";
-import { Colors } from "@/theme";
-import { Fonts } from "@/theme";
+import * as LocalAuthentication from "expo-local-authentication";
+import * as Haptics from "expo-haptics";
+import { authenticateBiometricFirst, biometricErrorMessage } from "@/lib/authenticateBiometrics";
+import { isBiometricEnabled } from "@/stores/biometric.store";
+import {
+  getAccessToken,
+  getBiometricReloginSession,
+  saveSession,
+} from "@/stores/auth.storage";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [stayLoggedIn, setStayLoggedIn] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricType, setBiometricType] = useState<string>("Biometrics");
+  const passwordRef = useRef<TextInput>(null);
 
-  const canSubmit = useMemo(
-    () => EMAIL_REGEX.test(email.trim()) && password.trim().length >= 6 && !loading,
-    [email, password, loading]
-  );
+  useEffect(() => {
+    setShowValidation(false);
+  }, [email, password]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const compatible = await LocalAuthentication.hasHardwareAsync();
+      const enrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!compatible || !enrolled || cancelled) return;
+
+      setBiometricAvailable(true);
+      const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+      if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+        setBiometricType("Face ID");
+      } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+        setBiometricType("Fingerprint");
+      }
+
+      const userEnabled = await isBiometricEnabled();
+      if (!userEnabled || cancelled) return;
+      const token = await getAccessToken();
+      const relogin = await getBiometricReloginSession();
+      if (!token && !relogin) return;
+
+      const result = await authenticateBiometricFirst("Log in to FinPulse");
+      if (cancelled) return;
+      if (result.success) {
+        if (!token && relogin) {
+          await saveSession(relogin.token, relogin.userId);
+        }
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        router.replace("/(tabs)");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only auto biometric; omit router to avoid re-prompts on navigation
+  }, []);
+
+  async function onBiometricLogin() {
+    const bio = await isBiometricEnabled();
+    const token = await getAccessToken();
+    const relogin = await getBiometricReloginSession();
+
+    if (!bio) {
+      Alert.alert(
+        "Biometric login off",
+        "Open Profile, sign in with email and password, then turn on Biometric Login."
+      );
+      return;
+    }
+    if (!token && !relogin) {
+      Alert.alert(
+        "Sign in required",
+        "Sign in with email and password once, enable Biometric Login in Profile, then you can use Face ID here after logging out."
+      );
+      return;
+    }
+
+    const result = await authenticateBiometricFirst("Log in to FinPulse");
+
+    if (result.success) {
+      if (!token && relogin) {
+        await saveSession(relogin.token, relogin.userId);
+      }
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace("/(tabs)");
+    } else if (result.error === "user_cancel") {
+      // User cancelled, do nothing
+    } else if (result.error === "lockout") {
+      Alert.alert(
+        "Biometrics locked",
+        "Too many failed attempts. Unlock your phone with your device passcode, then try again or use email and password."
+      );
+    } else {
+      const msg = biometricErrorMessage(result.error);
+      Alert.alert(
+        "Authentication failed",
+        msg || "Please try again or use your email and password."
+      );
+    }
+  }
+
+  const trimmedEmail = email.trim();
+  const emailInvalid = !EMAIL_REGEX.test(trimmedEmail);
+  const passwordTooShort = password.length < 6;
+
+  const emailError =
+    showValidation && trimmedEmail.length === 0
+      ? "Email is required."
+      : showValidation && emailInvalid
+        ? "Enter a valid email address."
+        : undefined;
+
+  const passwordError =
+    showValidation && password.length === 0
+      ? "Password is required."
+      : showValidation && passwordTooShort
+        ? "Password must be at least 6 characters."
+        : undefined;
+
+  const canPressLogin =
+    !loading && trimmedEmail.length > 0 && password.length > 0;
+
+  function loginErrorMessage(err: unknown): string {
+    if (err instanceof Error) {
+      const m = err.message;
+      if (m.includes("Network request failed") || m.includes("Failed to fetch")) {
+        return "No internet connection. Check your network and try again.";
+      }
+      return m;
+    }
+    return "Something went wrong. Please try again.";
+  }
 
   async function onLogin() {
-    if (!canSubmit) return;
+    setShowValidation(true);
+    if (emailInvalid || passwordTooShort || trimmedEmail.length === 0 || password.length === 0) {
+      return;
+    }
     setLoading(true);
     try {
-      await login({ email: email.trim(), password, stayLoggedIn });
+      await login({ email: trimmedEmail, password });
       router.replace("/(tabs)");
     } catch (err) {
-      Alert.alert("Login failed", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert("Login failed", loginErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -64,7 +195,7 @@ export default function LoginScreen() {
         <View style={styles.form}>
           <Text style={styles.label}>Email Address</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, emailError ? styles.inputError : null]}
             placeholder="basel@example.com"
             placeholderTextColor={Colors.placeholder}
             value={email}
@@ -73,12 +204,18 @@ export default function LoginScreen() {
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="next"
+            onSubmitEditing={() => passwordRef.current?.focus()}
+            textContentType="username"
+            autoComplete="email"
+            editable={!loading}
           />
+          {emailError ? <Text style={styles.fieldError}>{emailError}</Text> : null}
 
           <Text style={[styles.label, { marginTop: 14 }]}>Password</Text>
           <View style={styles.passwordWrap}>
             <TextInput
-              style={[styles.input, styles.passwordInput]}
+              ref={passwordRef}
+              style={[styles.input, styles.passwordInput, passwordError ? styles.inputError : null]}
               placeholder="••••••••"
               placeholderTextColor={Colors.placeholder}
               value={password}
@@ -88,6 +225,9 @@ export default function LoginScreen() {
               autoCorrect={false}
               returnKeyType="done"
               onSubmitEditing={onLogin}
+              textContentType="password"
+              autoComplete="password"
+              editable={!loading}
             />
             <Pressable
               onPress={() => setShowPassword((v) => !v)}
@@ -101,6 +241,7 @@ export default function LoginScreen() {
               />
             </Pressable>
           </View>
+          {passwordError ? <Text style={styles.fieldError}>{passwordError}</Text> : null}
 
           <Pressable
             onPress={() => router.push("/auth/forgot-password")}
@@ -121,21 +262,44 @@ export default function LoginScreen() {
 
           <Pressable
             onPress={onLogin}
-            disabled={!canSubmit}
+            disabled={!canPressLogin}
             style={({ pressed }) => [
               styles.primaryBtn,
-              (!canSubmit || loading) && styles.primaryBtnDisabled,
-              pressed && canSubmit && { opacity: 0.85 },
+              (!canPressLogin || loading) && styles.primaryBtnDisabled,
+              pressed && canPressLogin && !loading && { opacity: 0.85 },
             ]}
           >
-            <Text style={styles.primaryBtnText}>
-              {loading ? "Logging in..." : "Login"}
-            </Text>
+            {loading ? (
+              <ActivityIndicator color={Colors.white} />
+            ) : (
+              <Text style={styles.primaryBtnText}>Login</Text>
+            )}
           </Pressable>
+
+          {biometricAvailable && (
+            <>
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+              <Pressable
+                onPress={onBiometricLogin}
+                style={({ pressed }) => [styles.biometricBtn, pressed && { opacity: 0.85 }]}
+              >
+                <Ionicons
+                  name={biometricType === "Face ID" ? "scan-outline" : "finger-print-outline"}
+                  size={22}
+                  color={Colors.accent}
+                />
+                <Text style={styles.biometricText}>Login with {biometricType}</Text>
+              </Pressable>
+            </>
+          )}
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>Don't have an account?</Text>
+          <Text style={styles.footerText}>{"Don't have an account?"}</Text>
           <Pressable onPress={() => router.push("/auth/register")} hitSlop={10}>
             <Text style={styles.footerLink}> Create new account</Text>
           </Pressable>
@@ -145,8 +309,8 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
+const createStyles = () => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1, paddingHorizontal: 22 },
 
   logoWrap: { alignItems: "center", marginTop: 24, marginBottom: 24 },
@@ -186,8 +350,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 15,
     color: Colors.textPrimary,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.card,
     fontFamily: Fonts.regular,
+  },
+  inputError: {
+    borderColor: Colors.danger,
+  },
+  fieldError: {
+    marginTop: 6,
+    fontSize: 13,
+    color: Colors.danger,
+    fontFamily: Fonts.medium,
   },
 
   passwordWrap: { position: "relative" as const },
@@ -234,6 +407,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: Fonts.bold,
   },
+
+  dividerRow: { flexDirection: "row", alignItems: "center", marginTop: 20, gap: 12 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  dividerText: { fontSize: 13, color: Colors.textTertiary, fontFamily: Fonts.medium },
+  biometricBtn: {
+    marginTop: 16, height: 54, borderRadius: 16, borderWidth: 1.5, borderColor: Colors.border,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
+    backgroundColor: Colors.card,
+  },
+  biometricText: { fontSize: 15, color: Colors.accent, fontFamily: Fonts.bold },
 
   footer: {
     marginTop: "auto",

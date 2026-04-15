@@ -1,6 +1,6 @@
 import { apiRequest, USE_MOCK } from "./api";
 import { Alert } from "../models/Alert";
-import { getSessionUserId } from "./session";
+import { formatPrice } from "../stores/currency.store";
 
 let mockAlerts: Alert[] = [
   {
@@ -8,7 +8,7 @@ let mockAlerts: Alert[] = [
     symbol: "NVDA",
     type: "price_above",
     targetPrice: 500,
-    description: "Above $500.00",
+    description: `Above ${formatPrice(500)}`,
     isActive: true,
     createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
   },
@@ -34,7 +34,7 @@ let mockAlerts: Alert[] = [
     symbol: "GOOGL",
     type: "price_below",
     targetPrice: 130,
-    description: "Below $130.00",
+    description: `Below ${formatPrice(130)}`,
     isActive: true,
     createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
   },

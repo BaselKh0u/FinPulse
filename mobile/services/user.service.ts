@@ -1,4 +1,11 @@
 import { apiRequest, USE_MOCK } from "./api";
+import {
+  clearSession,
+  getAccessToken,
+  getStoredUserId,
+  stashSessionForBiometricRelogin,
+} from "@/stores/auth.storage";
+import { isBiometricEnabled } from "@/stores/biometric.store";
 import { User, UserPreferences } from "@/models/User";
 import { clearSession, getSessionUserId } from "./session";
 
@@ -6,7 +13,7 @@ const mockUser: User = {
   id: "mock-user-1",
   firstName: "Basel",
   lastName: "Kh",
-  email: "basel@finpulse.io",
+  email: "basel@example.com",
   phone: "+972 54-XXX-XXXX",
   joinedAt: "2025-09-01T00:00:00Z",
   isVerified: true,
@@ -59,7 +66,20 @@ export async function updateProfile(patch: Partial<Pick<User, "firstName" | "las
 }
 
 export async function logout(): Promise<void> {
-  await clearSession();
-  if (USE_MOCK) return;
-  await apiRequest("/auth/logout", { method: "POST" });
+  try {
+    if (await isBiometricEnabled()) {
+      const t = await getAccessToken();
+      const u = await getStoredUserId();
+      if (t && u) await stashSessionForBiometricRelogin(t, u);
+    }
+  } catch {
+    // non-fatal — still log out
+  }
+  try {
+    if (!USE_MOCK) {
+      await apiRequest("/auth/logout", { method: "POST" });
+    }
+  } finally {
+    await clearSession();
+  }
 }

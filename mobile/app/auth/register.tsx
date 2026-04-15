@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -14,12 +15,30 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { register } from "@/services/auth.service";
+import { runPostRegistrationPermissionPrompts } from "@/services/onboarding-permissions.service";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_NAME_LEN = 2;
+const MAX_NAME_LEN = 60;
+const MIN_PASSWORD_LEN = 8;
+
+function registerErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const m = err.message;
+    if (m.includes("Network request failed") || m.includes("Failed to fetch")) {
+      return "No internet connection. Check your network and try again.";
+    }
+    return m;
+  }
+  return "Something went wrong. Please try again.";
+}
 
 export default function RegisterScreen() {
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -28,40 +47,98 @@ export default function RegisterScreen() {
   const [password2, setPassword2] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
 
   const lastNameRef = useRef<TextInput>(null);
   const emailRef = useRef<TextInput>(null);
   const passwordRef = useRef<TextInput>(null);
   const password2Ref = useRef<TextInput>(null);
 
-  const canSubmit = useMemo(() => {
-    return (
-      firstName.trim().length >= 2 &&
-      lastName.trim().length >= 2 &&
-      EMAIL_REGEX.test(email.trim()) &&
-      password.trim().length >= 6 &&
-      password === password2 &&
-      !loading
-    );
-  }, [firstName, lastName, email, password, password2, loading]);
+  useEffect(() => {
+    setShowValidation(false);
+  }, [firstName, lastName, email, password, password2]);
+
+  const tFirst = firstName.trim();
+  const tLast = lastName.trim();
+  const tEmail = email.trim();
+
+  const firstNameError =
+    showValidation && tFirst.length === 0
+      ? "First name is required."
+      : showValidation && tFirst.length < MIN_NAME_LEN
+        ? `Use at least ${MIN_NAME_LEN} characters.`
+        : showValidation && tFirst.length > MAX_NAME_LEN
+          ? `Max ${MAX_NAME_LEN} characters.`
+          : undefined;
+
+  const lastNameError =
+    showValidation && tLast.length === 0
+      ? "Last name is required."
+      : showValidation && tLast.length < MIN_NAME_LEN
+        ? `Use at least ${MIN_NAME_LEN} characters.`
+        : showValidation && tLast.length > MAX_NAME_LEN
+          ? `Max ${MAX_NAME_LEN} characters.`
+          : undefined;
+
+  const emailError =
+    showValidation && tEmail.length === 0
+      ? "Email is required."
+      : showValidation && !EMAIL_REGEX.test(tEmail)
+        ? "Enter a valid email address."
+        : undefined;
+
+  const passwordError =
+    showValidation && password.length === 0
+      ? "Password is required."
+      : showValidation && password.length < MIN_PASSWORD_LEN
+        ? `Use at least ${MIN_PASSWORD_LEN} characters.`
+        : undefined;
+
+  const password2Error =
+    showValidation && password2.length === 0
+      ? "Confirm your password."
+      : showValidation && password !== password2
+        ? "Passwords don’t match."
+        : undefined;
+
+  const canPressCreate =
+    !loading &&
+    tFirst.length > 0 &&
+    tLast.length > 0 &&
+    tEmail.length > 0 &&
+    password.length > 0 &&
+    password2.length > 0;
 
   async function onRegister() {
-    if (!canSubmit) return;
+    setShowValidation(true);
+    if (
+      tFirst.length < MIN_NAME_LEN ||
+      tFirst.length > MAX_NAME_LEN ||
+      tLast.length < MIN_NAME_LEN ||
+      tLast.length > MAX_NAME_LEN ||
+      !EMAIL_REGEX.test(tEmail) ||
+      password.length < MIN_PASSWORD_LEN ||
+      password !== password2
+    ) {
+      return;
+    }
+
     setLoading(true);
     try {
       await register({
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        email: email.trim(),
+        firstName: tFirst,
+        lastName: tLast,
+        email: tEmail,
         password,
       });
-      Alert.alert("Account created", "Now you can login.");
-      router.replace("/auth/login");
-    } catch (err) {
+      await runPostRegistrationPermissionPrompts();
       Alert.alert(
-        "Registration failed",
-        err instanceof Error ? err.message : "Please try again."
+        "Account created",
+        "You can sign in with your email and password.\n\nIf you skipped any permission, you can change it later in system Settings or in Profile (e.g. Face ID under Biometric login).",
+        [{ text: "OK", onPress: () => router.replace("/auth/login") }]
       );
+    } catch (err) {
+      Alert.alert("Registration failed", registerErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -85,12 +162,12 @@ export default function RegisterScreen() {
           </Pressable>
 
           <Text style={styles.title}>Create account</Text>
-          <Text style={styles.subtitle}>Let's get you started</Text>
+          <Text style={styles.subtitle}>{"Let's get you started"}</Text>
 
           <View style={styles.form}>
             <Text style={styles.label}>First name</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, firstNameError ? styles.inputError : null]}
               placeholder="Basel"
               placeholderTextColor={Colors.placeholder}
               value={firstName}
@@ -99,12 +176,16 @@ export default function RegisterScreen() {
               autoCorrect={false}
               returnKeyType="next"
               onSubmitEditing={() => lastNameRef.current?.focus()}
+              textContentType="givenName"
+              autoComplete="name-given"
+              editable={!loading}
             />
+            {firstNameError ? <Text style={styles.fieldError}>{firstNameError}</Text> : null}
 
             <Text style={[styles.label, styles.fieldGap]}>Last name</Text>
             <TextInput
               ref={lastNameRef}
-              style={styles.input}
+              style={[styles.input, lastNameError ? styles.inputError : null]}
               placeholder="Khoury"
               placeholderTextColor={Colors.placeholder}
               value={lastName}
@@ -113,12 +194,16 @@ export default function RegisterScreen() {
               autoCorrect={false}
               returnKeyType="next"
               onSubmitEditing={() => emailRef.current?.focus()}
+              textContentType="familyName"
+              autoComplete="name-family"
+              editable={!loading}
             />
+            {lastNameError ? <Text style={styles.fieldError}>{lastNameError}</Text> : null}
 
             <Text style={[styles.label, styles.fieldGap]}>Email</Text>
             <TextInput
               ref={emailRef}
-              style={styles.input}
+              style={[styles.input, emailError ? styles.inputError : null]}
               placeholder="basel@example.com"
               placeholderTextColor={Colors.placeholder}
               value={email}
@@ -128,14 +213,22 @@ export default function RegisterScreen() {
               autoCorrect={false}
               returnKeyType="next"
               onSubmitEditing={() => passwordRef.current?.focus()}
+              textContentType="emailAddress"
+              autoComplete="email"
+              editable={!loading}
             />
+            {emailError ? <Text style={styles.fieldError}>{emailError}</Text> : null}
 
             <Text style={[styles.label, styles.fieldGap]}>Password</Text>
             <View style={styles.passwordWrap}>
               <TextInput
                 ref={passwordRef}
-                style={[styles.input, styles.passwordInput]}
-                placeholder="At least 6 characters"
+                style={[
+                  styles.input,
+                  styles.passwordInput,
+                  passwordError ? styles.inputError : null,
+                ]}
+                placeholder={`At least ${MIN_PASSWORD_LEN} characters`}
                 placeholderTextColor={Colors.placeholder}
                 value={password}
                 onChangeText={setPassword}
@@ -144,11 +237,15 @@ export default function RegisterScreen() {
                 autoCorrect={false}
                 returnKeyType="next"
                 onSubmitEditing={() => password2Ref.current?.focus()}
+                textContentType="newPassword"
+                autoComplete="password-new"
+                editable={!loading}
               />
               <Pressable
                 onPress={() => setShowPass((v) => !v)}
                 style={styles.eyeBtn}
                 hitSlop={10}
+                disabled={loading}
               >
                 <Ionicons
                   name={showPass ? "eye-off-outline" : "eye-outline"}
@@ -157,11 +254,12 @@ export default function RegisterScreen() {
                 />
               </Pressable>
             </View>
+            {passwordError ? <Text style={styles.fieldError}>{passwordError}</Text> : null}
 
             <Text style={[styles.label, styles.fieldGap]}>Repeat password</Text>
             <TextInput
               ref={password2Ref}
-              style={styles.input}
+              style={[styles.input, password2Error ? styles.inputError : null]}
               placeholder="Repeat password"
               placeholderTextColor={Colors.placeholder}
               value={password2}
@@ -171,25 +269,45 @@ export default function RegisterScreen() {
               autoCorrect={false}
               returnKeyType="done"
               onSubmitEditing={onRegister}
+              textContentType="newPassword"
+              autoComplete="password-new"
+              editable={!loading}
             />
+            {password2Error ? <Text style={styles.fieldError}>{password2Error}</Text> : null}
+
+            <Text style={styles.hint}>
+              Password must be at least {MIN_PASSWORD_LEN} characters. Use a mix of letters and numbers for a stronger password.
+            </Text>
 
             <Pressable
               onPress={onRegister}
-              disabled={!canSubmit}
+              disabled={!canPressCreate}
               style={({ pressed }) => [
                 styles.primaryBtn,
-                (!canSubmit || loading) && styles.primaryBtnDisabled,
-                pressed && canSubmit && { opacity: 0.85 },
+                (!canPressCreate || loading) && styles.primaryBtnDisabled,
+                pressed && canPressCreate && !loading && { opacity: 0.85 },
               ]}
             >
-              <Text style={styles.primaryBtnText}>
-                {loading ? "Creating..." : "Create account"}
+              {loading ? (
+                <ActivityIndicator color={Colors.white} />
+              ) : (
+                <Text style={styles.primaryBtnText}>Create account</Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              onPress={() => router.push("/info/terms")}
+              style={styles.termsWrap}
+              disabled={loading}
+            >
+              <Text style={styles.termsText}>
+                By creating an account you agree to our <Text style={styles.termsLink}>Terms</Text>
               </Text>
             </Pressable>
 
             <View style={styles.footer}>
               <Text style={styles.footerText}>Already have an account?</Text>
-              <Pressable onPress={() => router.replace("/auth/login")} hitSlop={10}>
+              <Pressable onPress={() => router.replace("/auth/login")} hitSlop={10} disabled={loading}>
                 <Text style={styles.footerLink}> Login</Text>
               </Pressable>
             </View>
@@ -200,92 +318,117 @@ export default function RegisterScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
-  flex: { flex: 1 },
-  container: { flex: 1, paddingHorizontal: 22 },
-  scrollContent: { paddingTop: 8, paddingBottom: 30 },
-  back: { width: 42, height: 42, justifyContent: "center" },
+const createStyles = () =>
+  StyleSheet.create({
+    safe: { flex: 1, backgroundColor: Colors.background },
+    flex: { flex: 1 },
+    container: { flex: 1, paddingHorizontal: 22 },
+    scrollContent: { paddingTop: 8, paddingBottom: 30 },
+    back: { width: 42, height: 42, justifyContent: "center" },
 
-  title: {
-    fontSize: 30,
-    color: Colors.textPrimary,
-    marginTop: 6,
-    fontFamily: Fonts.bold,
-  },
-  subtitle: {
-    marginTop: 6,
-    fontSize: 15,
-    color: Colors.textSecondary,
-    fontFamily: Fonts.medium,
-  },
+    title: {
+      fontSize: 30,
+      color: Colors.textPrimary,
+      marginTop: 6,
+      fontFamily: Fonts.bold,
+    },
+    subtitle: {
+      marginTop: 6,
+      fontSize: 15,
+      color: Colors.textSecondary,
+      fontFamily: Fonts.medium,
+    },
 
-  form: { marginTop: 18 },
-  label: {
-    fontSize: 14,
-    color: Colors.textPrimary,
-    marginBottom: 8,
-    fontFamily: Fonts.semiBold,
-  },
-  fieldGap: { marginTop: 14 },
-  input: {
-    height: 52,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 16,
-    fontSize: 15,
-    color: Colors.textPrimary,
-    backgroundColor: Colors.white,
-    fontFamily: Fonts.regular,
-  },
+    form: { marginTop: 18 },
+    label: {
+      fontSize: 14,
+      color: Colors.textPrimary,
+      marginBottom: 8,
+      fontFamily: Fonts.semiBold,
+    },
+    fieldGap: { marginTop: 14 },
+    input: {
+      height: 52,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: Colors.border,
+      paddingHorizontal: 16,
+      fontSize: 15,
+      color: Colors.textPrimary,
+      backgroundColor: Colors.card,
+      fontFamily: Fonts.regular,
+    },
+    inputError: { borderColor: Colors.danger },
+    fieldError: {
+      marginTop: 6,
+      fontSize: 13,
+      color: Colors.danger,
+      fontFamily: Fonts.medium,
+    },
+    hint: {
+      marginTop: 12,
+      fontSize: 12,
+      color: Colors.textTertiary,
+      fontFamily: Fonts.medium,
+      lineHeight: 17,
+    },
 
-  passwordWrap: { position: "relative" },
-  passwordInput: { paddingRight: 48 },
-  eyeBtn: {
-    position: "absolute",
-    right: 14,
-    top: 0,
-    height: 52,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+    passwordWrap: { position: "relative" },
+    passwordInput: { paddingRight: 48 },
+    eyeBtn: {
+      position: "absolute",
+      right: 14,
+      top: 0,
+      height: 52,
+      alignItems: "center",
+      justifyContent: "center",
+    },
 
-  primaryBtn: {
-    marginTop: 22,
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: Colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: Colors.shadow,
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  primaryBtnDisabled: { opacity: 0.45 },
-  primaryBtnText: {
-    color: Colors.white,
-    fontSize: 16,
-    fontFamily: Fonts.bold,
-  },
+    primaryBtn: {
+      marginTop: 22,
+      height: 54,
+      borderRadius: 16,
+      backgroundColor: Colors.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      shadowColor: Colors.shadow,
+      shadowOpacity: 0.12,
+      shadowRadius: 14,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 4,
+    },
+    primaryBtnDisabled: { opacity: 0.45 },
+    primaryBtnText: {
+      color: Colors.white,
+      fontSize: 16,
+      fontFamily: Fonts.bold,
+    },
 
-  footer: {
-    marginTop: 16,
-    paddingBottom: 8,
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "center",
-  },
-  footerText: {
-    color: Colors.textSecondary,
-    fontSize: 14,
-    fontFamily: Fonts.medium,
-  },
-  footerLink: {
-    color: Colors.accent,
-    fontSize: 14,
-    fontFamily: Fonts.bold,
-  },
-});
+    termsWrap: { marginTop: 14, paddingHorizontal: 4 },
+    termsText: {
+      fontSize: 12,
+      color: Colors.textTertiary,
+      fontFamily: Fonts.medium,
+      textAlign: "center",
+      lineHeight: 18,
+    },
+    termsLink: { color: Colors.accent, fontFamily: Fonts.semiBold },
+
+    footer: {
+      marginTop: 16,
+      paddingBottom: 8,
+      alignItems: "center",
+      flexDirection: "row",
+      justifyContent: "center",
+    },
+    footerText: {
+      color: Colors.textSecondary,
+      fontSize: 14,
+      fontFamily: Fonts.medium,
+    },
+    footerLink: {
+      color: Colors.accent,
+      fontSize: 14,
+      fontFamily: Fonts.bold,
+    },
+  });

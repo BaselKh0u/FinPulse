@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -14,29 +15,60 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { forgotPassword } from "@/services/auth.service";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function ForgotPasswordScreen() {
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
   const router = useRouter();
 
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
 
-  const canSubmit = useMemo(
-    () => EMAIL_REGEX.test(email.trim()) && !loading,
-    [email, loading]
-  );
+  useEffect(() => {
+    setShowValidation(false);
+  }, [email]);
+
+  const trimmedEmail = email.trim();
+  const emailInvalid = !EMAIL_REGEX.test(trimmedEmail);
+
+  const emailError =
+    showValidation && trimmedEmail.length === 0
+      ? "Email is required."
+      : showValidation && emailInvalid
+        ? "Enter a valid email address."
+        : undefined;
+
+  const canPressSend = !loading && trimmedEmail.length > 0;
+
+  function sendErrorMessage(err: unknown): string {
+    if (err instanceof Error) {
+      const m = err.message;
+      if (m.includes("Network request failed") || m.includes("Failed to fetch")) {
+        return "No internet connection. Check your network and try again.";
+      }
+      return m;
+    }
+    return "Something went wrong. Please try again.";
+  }
 
   async function onSend() {
-    if (!canSubmit) return;
+    setShowValidation(true);
+    if (trimmedEmail.length === 0 || emailInvalid) return;
+
     setLoading(true);
     try {
-      await forgotPassword(email.trim());
-      Alert.alert("Email sent", "We sent you a reset link.");
-      router.back();
+      await forgotPassword(trimmedEmail);
+      Alert.alert(
+        "Check your email",
+        "If an account exists for this address, you'll receive reset instructions shortly.",
+        [{ text: "OK", onPress: () => router.back() }]
+      );
     } catch (err) {
-      Alert.alert("Failed", err instanceof Error ? err.message : "Please try again.");
+      Alert.alert("Couldn't send reset link", sendErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -59,7 +91,7 @@ export default function ForgotPasswordScreen() {
         <View style={styles.form}>
           <Text style={styles.label}>Email Address</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, emailError ? styles.inputError : null]}
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
@@ -69,20 +101,26 @@ export default function ForgotPasswordScreen() {
             placeholderTextColor={Colors.placeholder}
             returnKeyType="done"
             onSubmitEditing={onSend}
+            textContentType="emailAddress"
+            autoComplete="email"
+            editable={!loading}
           />
+          {emailError ? <Text style={styles.fieldError}>{emailError}</Text> : null}
 
           <Pressable
             onPress={onSend}
-            disabled={!canSubmit}
+            disabled={!canPressSend}
             style={({ pressed }) => [
               styles.primaryBtn,
-              (!canSubmit || loading) && styles.primaryBtnDisabled,
-              pressed && canSubmit && { opacity: 0.85 },
+              (!canPressSend || loading) && styles.primaryBtnDisabled,
+              pressed && canPressSend && !loading && { opacity: 0.85 },
             ]}
           >
-            <Text style={styles.primaryBtnText}>
-              {loading ? "Sending..." : "Send reset link"}
-            </Text>
+            {loading ? (
+              <ActivityIndicator color={Colors.white} />
+            ) : (
+              <Text style={styles.primaryBtnText}>Send reset link</Text>
+            )}
           </Pressable>
         </View>
 
@@ -97,8 +135,8 @@ export default function ForgotPasswordScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.white },
+const createStyles = () => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: Colors.background },
   container: { flex: 1, paddingHorizontal: 22, paddingTop: 8 },
   back: { width: 42, height: 42, justifyContent: "center" },
 
@@ -130,8 +168,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 15,
     color: Colors.textPrimary,
-    backgroundColor: Colors.white,
+    backgroundColor: Colors.card,
     fontFamily: Fonts.regular,
+  },
+  inputError: { borderColor: Colors.danger },
+  fieldError: {
+    marginTop: 6,
+    fontSize: 13,
+    color: Colors.danger,
+    fontFamily: Fonts.medium,
   },
 
   primaryBtn: {

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert as AlertDialog,
+  Dimensions,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,9 +12,16 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { LineChart } from "react-native-chart-kit";
+import * as Haptics from "expo-haptics";
 import { StockDetails, StockNewsItem } from "@/models/Stock";
-import { getStockDetails, getStockHistory } from "@/services/stock.service";
+import { getStockDetails, getStocks, addStock, removeStock } from "@/services/stock.service";
+import { getAlerts, deleteAlert } from "@/services/alert.service";
 import { Colors, Fonts } from "@/theme";
+import { useTheme } from "@/stores/theme.store";
+import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
+
+const CHART_WIDTH = Dimensions.get("window").width - 80;
 
 type TimeRange = "1D" | "1W" | "1M" | "3M" | "1Y" | "ALL";
 const TIME_RANGES: TimeRange[] = ["1D", "1W", "1M", "3M", "1Y", "ALL"];
@@ -33,108 +42,91 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function MiniChart({ data, color, width, height }: { data: number[]; color: string; width: number; height: number }) {
-  if (data.length < 2) return <View style={{ width, height }} />;
-
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const stepX = width / (data.length - 1);
-  const points = data.map((v, i) => `${i * stepX},${height - ((v - min) / range) * (height - 16) - 8}`).join(" ");
-
-  return (
-    <View style={{ width, height, overflow: "hidden" }}>
-      <View style={{ position: "absolute", top: 0, left: 0 }}>
-        <Svg width={width} height={height}>
-          <Polyline points={points} stroke={color} strokeWidth={2.5} fill="none" strokeLinejoin="round" />
-        </Svg>
-      </View>
-    </View>
-  );
-}
-
-function Svg({ width, height, children }: { width: number; height: number; children: React.ReactNode }) {
-  return <View style={{ width, height }}>{children}</View>;
-}
-
-function Polyline({ points, stroke, strokeWidth }: { points: string; stroke: string; strokeWidth: number; fill: string; strokeLinejoin: string }) {
-  const parsed = points.split(" ").map((p) => {
-    const [x, y] = p.split(",").map(Number);
-    return { x, y };
-  });
-
-  return (
-    <>
-      {parsed.map((point, i) => {
-        if (i === 0) return null;
-        const prev = parsed[i - 1];
-        const dx = point.x - prev.x;
-        const dy = point.y - prev.y;
-        const len = Math.sqrt(dx * dx + dy * dy);
-        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-        return (
-          <View
-            key={i}
-            style={{
-              position: "absolute",
-              left: prev.x,
-              top: prev.y - strokeWidth / 2,
-              width: len,
-              height: strokeWidth,
-              backgroundColor: stroke,
-              transform: [{ rotate: `${angle}deg` }],
-              transformOrigin: "left center",
-              borderRadius: strokeWidth / 2,
-            }}
-          />
-        );
-      })}
-      <View style={{
-        position: "absolute",
-        left: parsed[parsed.length - 1].x - 5,
-        top: parsed[parsed.length - 1].y - 5,
-        width: 10, height: 10, borderRadius: 5,
-        backgroundColor: stroke,
-        borderWidth: 2.5, borderColor: Colors.white,
-      }} />
-    </>
-  );
-}
-
 export default function StockDetailScreen() {
   const { symbol } = useLocalSearchParams<{ symbol: string }>();
   const router = useRouter();
+  const { isDark } = useTheme();
+  const styles = useMemo(createStyles, [isDark]);
+
+  const [cs, setCs] = useState(getCurrencySymbol());
+  useEffect(() => subscribeCurrency(() => setCs(getCurrencySymbol())), []);
 
   const [details, setDetails] = useState<StockDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedRange, setSelectedRange] = useState<TimeRange>("1M");
   const [chartData, setChartData] = useState<number[]>([]);
   const [inWatchlist, setInWatchlist] = useState(false);
+  const [hasAlert, setHasAlert] = useState(false);
+  const [alertId, setAlertId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const data = await getStockDetails(symbol ?? "");
+        const [data, watchlist, alerts] = await Promise.all([
+          getStockDetails(symbol ?? ""),
+          getStocks(),
+          getAlerts(),
+        ]);
         setDetails(data);
-        setChartData(data.chartData);
+        setInWatchlist(watchlist.some((s) => s.symbol.toUpperCase() === (symbol ?? "").toUpperCase()));
+        const matchingAlert = alerts.find((a) => a.symbol.toUpperCase() === (symbol ?? "").toUpperCase());
+        setHasAlert(!!matchingAlert);
+        setAlertId(matchingAlert?.id ?? null);
+      } catch {
+        // Leave details as null — error UI handles this when loading finishes
       } finally {
         setLoading(false);
       }
     })();
   }, [symbol]);
 
-  useEffect(() => {
-    if (!symbol) return;
-    (async () => {
-      try {
-        const series = await getStockHistory(symbol, selectedRange);
-        setChartData(series);
-      } catch {
-        // keep existing data if range request fails
-      }
-    })();
-  }, [symbol, selectedRange]);
+  async function toggleWatchlist() {
+    if (!details) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (inWatchlist) {
+      await removeStock(details.symbol);
+      setInWatchlist(false);
+    } else {
+      await addStock({
+        symbol: details.symbol,
+        name: details.name,
+        price: details.price,
+        change: details.change,
+        changePercent: details.changePercent,
+      });
+      setInWatchlist(true);
+    }
+  }
+
+  async function toggleOrCreateAlert() {
+    if (!details) return;
+    if (hasAlert && alertId) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      AlertDialog.alert(
+        "Remove Alert",
+        `Remove the alert for ${details.symbol}?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: async () => {
+              await deleteAlert(alertId);
+              setHasAlert(false);
+              setAlertId(null);
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            },
+          },
+        ],
+      );
+    } else {
+      router.push({
+        pathname: "/create-alert",
+        params: { symbol: details.symbol, stockName: details.name, stockPrice: String(details.price) },
+      });
+    }
+  }
 
   const isUp = (details?.changePercent ?? 0) >= 0;
   const priceColor = isUp ? Colors.success : Colors.danger;
@@ -153,7 +145,7 @@ export default function StockDetailScreen() {
     };
   }, [details]);
 
-  if (loading || !details) {
+  if (loading) {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.loadingWrap}>
@@ -163,20 +155,38 @@ export default function StockDetailScreen() {
     );
   }
 
+  if (!details) {
+    return (
+      <SafeAreaView style={styles.safe} edges={["top"]}>
+        <View style={styles.header}>
+          <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => pressed && { opacity: 0.7 }}>
+            <Ionicons name="chevron-back" size={28} color={Colors.textPrimary} />
+          </Pressable>
+        </View>
+        <View style={styles.loadingWrap}>
+          <Text style={styles.errorText}>{"Couldn't load this stock. Check your connection and try again."}</Text>
+          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.errorBackBtn, pressed && { opacity: 0.85 }]}>
+            <Text style={styles.errorBackBtnText}>Go back</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   const stats = details.keyStats;
   const statItems: { label: string; value: string }[] = [
-    { label: "Open", value: `$${stats.open.toFixed(2)}` },
-    { label: "High", value: `$${stats.high.toFixed(2)}` },
-    { label: "Low", value: `$${stats.low.toFixed(2)}` },
+    { label: "Open", value: `${cs}${convertPrice(stats.open).toFixed(2)}` },
+    { label: "High", value: `${cs}${convertPrice(stats.high).toFixed(2)}` },
+    { label: "Low", value: `${cs}${convertPrice(stats.low).toFixed(2)}` },
     { label: "Volume", value: stats.volume },
     { label: "Avg Volume", value: stats.avgVolume },
     { label: "Market Cap", value: stats.marketCap },
     { label: "P/E Ratio", value: stats.peRatio !== null ? stats.peRatio.toFixed(1) : "N/A" },
-    { label: "52W High", value: `$${stats.week52High.toFixed(2)}` },
-    { label: "52W Low", value: `$${stats.week52Low.toFixed(2)}` },
+    { label: "52W High", value: `${cs}${convertPrice(stats.week52High).toFixed(2)}` },
+    { label: "52W Low", value: `${cs}${convertPrice(stats.week52Low).toFixed(2)}` },
     { label: "Beta", value: stats.beta.toFixed(2) },
     { label: "Dividend", value: stats.dividend },
-    { label: "Close", value: `$${stats.close.toFixed(2)}` },
+    { label: "Close", value: `${cs}${convertPrice(stats.close).toFixed(2)}` },
   ];
 
   function renderNewsItem(item: StockNewsItem) {
@@ -204,7 +214,6 @@ export default function StockDetailScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={({ pressed }) => pressed && { opacity: 0.7 }}>
           <Ionicons name="chevron-back" size={28} color={Colors.textPrimary} />
@@ -214,32 +223,26 @@ export default function StockDetailScreen() {
           <Text style={styles.headerName} numberOfLines={1}>{details.name}</Text>
         </View>
         <View style={styles.headerRight}>
-          <Pressable
-            onPress={() => setInWatchlist(!inWatchlist)}
-            hitSlop={8}
-            style={({ pressed }) => pressed && { opacity: 0.7 }}
-          >
+          <Pressable onPress={toggleWatchlist} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.7 }}>
             <Ionicons
               name={inWatchlist ? "bookmark" : "bookmark-outline"}
               size={24}
               color={inWatchlist ? Colors.accent : Colors.textSecondary}
             />
           </Pressable>
-          <Pressable
-            onPress={() => router.push("/create-alert")}
-            hitSlop={8}
-            style={({ pressed }) => pressed && { opacity: 0.7 }}
-          >
-            <Ionicons name="notifications-outline" size={24} color={Colors.textSecondary} />
+          <Pressable onPress={toggleOrCreateAlert} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.7 }}>
+            <Ionicons
+              name={hasAlert ? "notifications" : "notifications-outline"}
+              size={24}
+              color={hasAlert ? Colors.warning : Colors.textSecondary}
+            />
           </Pressable>
         </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
-
-        {/* Price Section */}
         <View style={styles.priceSection}>
-          <Text style={styles.priceMain}>${details.price.toFixed(2)}</Text>
+          <Text style={styles.priceMain}>{cs}{convertPrice(details.price).toFixed(2)}</Text>
           <View style={styles.changeRow}>
             <Ionicons name={isUp ? "trending-up" : "trending-down"} size={20} color={priceColor} />
             <Text style={[styles.changeAmount, { color: priceColor }]}>
@@ -253,14 +256,43 @@ export default function StockDetailScreen() {
           </View>
         </View>
 
-        {/* Chart */}
         <View style={styles.chartCard}>
-          <MiniChart data={chartData} color={priceColor} width={320} height={160} />
+          {details.chartData.length >= 2 ? (
+            <LineChart
+              data={{
+                labels: [],
+                datasets: [{ data: details.chartData, color: () => priceColor, strokeWidth: 2.5 }],
+              }}
+              width={CHART_WIDTH}
+              height={180}
+              withDots={false}
+              withInnerLines={false}
+              withOuterLines={false}
+              withHorizontalLabels={true}
+              withVerticalLabels={false}
+              chartConfig={{
+                backgroundColor: Colors.card,
+                backgroundGradientFrom: Colors.card,
+                backgroundGradientTo: Colors.card,
+                decimalPlaces: 2,
+                color: () => priceColor,
+                labelColor: () => Colors.textTertiary,
+                propsForBackgroundLines: { stroke: Colors.divider, strokeDasharray: "4 4" },
+                propsForLabels: { fontFamily: Fonts.medium, fontSize: 11 },
+              }}
+              bezier
+              style={styles.chart}
+            />
+          ) : (
+            <View style={{ height: 180, alignItems: "center", justifyContent: "center" }}>
+              <Text style={{ color: Colors.textTertiary, fontFamily: Fonts.medium }}>No chart data</Text>
+            </View>
+          )}
           <View style={styles.rangeRow}>
             {TIME_RANGES.map((r) => (
               <Pressable
                 key={r}
-                onPress={() => setSelectedRange(r)}
+                onPress={() => { setSelectedRange(r); Haptics.selectionAsync(); }}
                 style={[styles.rangeBtn, selectedRange === r && styles.rangeBtnActive]}
               >
                 <Text style={[styles.rangeText, selectedRange === r && styles.rangeTextActive]}>{r}</Text>
@@ -269,25 +301,23 @@ export default function StockDetailScreen() {
           </View>
         </View>
 
-        {/* Quick Actions */}
         <View style={styles.actionsRow}>
           <Pressable
-            style={({ pressed }) => [styles.actionBtn, styles.actionBtnPrimary, pressed && { opacity: 0.85 }]}
-            onPress={() => setInWatchlist(!inWatchlist)}
+            style={({ pressed }) => [styles.actionBtn, inWatchlist ? styles.actionBtnSuccess : styles.actionBtnPrimary, pressed && { opacity: 0.85 }]}
+            onPress={toggleWatchlist}
           >
-            <Ionicons name={inWatchlist ? "bookmark" : "bookmark-outline"} size={18} color={Colors.white} />
+            <Ionicons name={inWatchlist ? "checkmark-circle" : "bookmark-outline"} size={18} color={Colors.white} />
             <Text style={styles.actionTextPrimary}>{inWatchlist ? "In Watchlist" : "Add to Watchlist"}</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.actionBtn, styles.actionBtnOutline, pressed && { opacity: 0.85 }]}
-            onPress={() => router.push("/create-alert")}
+            onPress={toggleOrCreateAlert}
           >
-            <Ionicons name="notifications-outline" size={18} color={Colors.primary} />
-            <Text style={styles.actionTextOutline}>Set Alert</Text>
+            <Ionicons name={hasAlert ? "notifications" : "notifications-outline"} size={18} color={Colors.accent} />
+            <Text style={styles.actionTextOutline}>{hasAlert ? "Remove Alert" : "Set Alert"}</Text>
           </Pressable>
         </View>
 
-        {/* Key Statistics */}
         <Text style={styles.sectionTitle}>Key Statistics</Text>
         <View style={styles.statsGrid}>
           {statItems.map((s) => (
@@ -298,7 +328,6 @@ export default function StockDetailScreen() {
           ))}
         </View>
 
-        {/* Sentiment Analysis */}
         <Text style={styles.sectionTitle}>Social Sentiment</Text>
         <View style={styles.sentimentCard}>
           <View style={styles.sentHeaderRow}>
@@ -350,18 +379,6 @@ export default function StockDetailScreen() {
           )}
         </View>
 
-        <Text style={styles.sectionTitle}>Stability Score</Text>
-        <View style={styles.stabilityCard}>
-          <Text style={styles.stabilityScore}>{details.stabilityScore.toFixed(0)}/100</Text>
-          <Text style={styles.stabilityDescription}>
-            Higher means lower recent price volatility and more stable movement.
-          </Text>
-          <Text style={styles.confidenceText}>
-            Confidence: {(details.confidenceScore ?? 50).toFixed(0)}/100 (data trustworthiness)
-          </Text>
-        </View>
-
-        {/* Latest News */}
         {details.news.length > 0 && (
           <>
             <Text style={styles.sectionTitle}>Latest News</Text>
@@ -369,7 +386,6 @@ export default function StockDetailScreen() {
           </>
         )}
 
-        {/* About */}
         <Text style={styles.sectionTitle}>About {details.symbol}</Text>
         <View style={styles.aboutCard}>
           <Text style={styles.aboutText}>{details.description}</Text>
@@ -400,15 +416,27 @@ export default function StockDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = () => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   scroll: { paddingHorizontal: 20, paddingBottom: 20 },
-  loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
-
-  header: {
-    flexDirection: "row", alignItems: "center", paddingHorizontal: 16,
-    paddingVertical: 12,
+  loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
+  errorText: {
+    fontSize: 15,
+    color: Colors.textSecondary,
+    fontFamily: Fonts.medium,
+    textAlign: "center",
+    lineHeight: 22,
+    marginBottom: 20,
   },
+  errorBackBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+  },
+  errorBackBtnText: { color: Colors.white, fontSize: 15, fontFamily: Fonts.bold },
+
+  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 },
   headerCenter: { flex: 1, marginLeft: 8 },
   headerSymbol: { fontSize: 20, color: Colors.textPrimary, fontFamily: Fonts.bold },
   headerName: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.medium, marginTop: 1 },
@@ -422,43 +450,31 @@ const styles = StyleSheet.create({
   changePillText: { fontSize: 14, fontFamily: Fonts.bold },
 
   chartCard: {
-    backgroundColor: Colors.card, borderRadius: 20, padding: 20, marginTop: 20,
-    alignItems: "center",
+    backgroundColor: Colors.card, borderRadius: 20, padding: 20, marginTop: 20, alignItems: "center",
     shadowColor: Colors.shadow, shadowOpacity: 0.04, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 2,
   },
-  rangeRow: {
-    flexDirection: "row", gap: 4, marginTop: 20,
-    backgroundColor: Colors.iconBackground, borderRadius: 12, padding: 4,
-  },
+  chart: { borderRadius: 16, marginHorizontal: -8 },
+  rangeRow: { flexDirection: "row", gap: 4, marginTop: 20, backgroundColor: Colors.iconBackground, borderRadius: 12, padding: 4 },
   rangeBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
-  rangeBtnActive: { backgroundColor: Colors.white, shadowColor: Colors.shadow, shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+  rangeBtnActive: { backgroundColor: Colors.card, shadowColor: Colors.shadow, shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
   rangeText: { fontSize: 13, color: Colors.textTertiary, fontFamily: Fonts.semiBold },
   rangeTextActive: { color: Colors.textPrimary, fontFamily: Fonts.bold },
 
   actionsRow: { flexDirection: "row", gap: 12, marginTop: 20 },
-  actionBtn: {
-    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 8, height: 48, borderRadius: 14,
-  },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, borderRadius: 14 },
   actionBtnPrimary: { backgroundColor: Colors.primary },
+  actionBtnSuccess: { backgroundColor: Colors.success },
   actionBtnOutline: { backgroundColor: Colors.card, borderWidth: 1.5, borderColor: Colors.border },
   actionTextPrimary: { color: Colors.white, fontSize: 14, fontFamily: Fonts.bold },
-  actionTextOutline: { color: Colors.primary, fontSize: 14, fontFamily: Fonts.bold },
+  actionTextOutline: { color: Colors.accent, fontSize: 14, fontFamily: Fonts.bold },
 
-  sectionTitle: {
-    fontSize: 20, color: Colors.textPrimary, fontFamily: Fonts.bold,
-    marginTop: 28, marginBottom: 14,
-  },
+  sectionTitle: { fontSize: 20, color: Colors.textPrimary, fontFamily: Fonts.bold, marginTop: 28, marginBottom: 14 },
 
   statsGrid: {
-    flexDirection: "row", flexWrap: "wrap", backgroundColor: Colors.card,
-    borderRadius: 18, padding: 4,
+    flexDirection: "row", flexWrap: "wrap", backgroundColor: Colors.card, borderRadius: 18, padding: 4,
     shadowColor: Colors.shadow, shadowOpacity: 0.03, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1,
   },
-  statCell: {
-    width: "50%", paddingVertical: 14, paddingHorizontal: 16,
-    borderBottomWidth: 1, borderBottomColor: Colors.divider,
-  },
+  statCell: { width: "50%", paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: Colors.divider },
   statLabel: { fontSize: 12, color: Colors.textTertiary, fontFamily: Fonts.medium, marginBottom: 4 },
   statValue: { fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.bold },
 
