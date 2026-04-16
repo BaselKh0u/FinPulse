@@ -118,10 +118,7 @@ export default function CreateAlertScreen() {
       } catch {
         // Notification scheduling can fail in Expo Go — ignore silently
       }
-
-      Alert.alert("Alert Created", `You'll be notified about ${selectedStock.symbol}.`, [
-        { text: "OK", onPress: () => router.back() },
-      ]);
+      router.back();
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to create alert. Please try again.");
     } finally {

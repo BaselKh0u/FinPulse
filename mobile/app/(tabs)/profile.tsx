@@ -438,6 +438,23 @@ export default function ProfileScreen() {
               </View>
             }
           />
+          {!user.isVerified && (
+            <>
+              <Divider />
+              <SettingsRow
+                icon="mail-unread-outline"
+                label="Resend Verification Email"
+                onPress={async () => {
+                  try {
+                    await resendVerificationEmail();
+                    Alert.alert("Sent", "Verification email sent. Check inbox/spam.");
+                  } catch (e) {
+                    Alert.alert("Failed", e instanceof Error ? e.message : "Could not resend verification email.");
+                  }
+                }}
+              />
+            </>
+          )}
         </View>
 
         {/* Preferences Section */}
@@ -569,6 +586,16 @@ export default function ProfileScreen() {
           <View style={styles.editSheet}>
             <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>Edit Profile</Text>
+            <Pressable
+              style={styles.avatarEditRow}
+              onPress={pickAvatar}
+              disabled={avatarSaving}
+            >
+              <Ionicons name="camera-outline" size={18} color={Colors.accent} />
+              <Text style={styles.avatarEditRowText}>
+                {avatarSaving ? "Updating image..." : "Change profile image"}
+              </Text>
+            </Pressable>
             <ScrollView
               ref={editScrollRef}
               bounces={false}
@@ -846,6 +873,12 @@ function createStyles() { return StyleSheet.create({
   modalTitle: { fontSize: 22, color: Colors.textPrimary, fontFamily: Fonts.bold, marginBottom: 20 },
 
   fieldLabel: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.semiBold, marginBottom: 6, marginTop: 12 },
+  avatarEditRow: {
+    height: 44, borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: Colors.background, flexDirection: "row", alignItems: "center",
+    justifyContent: "center", gap: 8, marginBottom: 8,
+  },
+  avatarEditRowText: { fontSize: 14, color: Colors.accent, fontFamily: Fonts.semiBold },
   fieldInput: {
     height: 50, borderRadius: 14, borderWidth: 1, borderColor: Colors.border,
     paddingHorizontal: 16, fontSize: 15, color: Colors.textPrimary, backgroundColor: Colors.background,

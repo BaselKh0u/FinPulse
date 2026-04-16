@@ -11,6 +11,8 @@ import { getAccessToken, subscribeSessionChange } from "@/stores/auth.storage";
 import { applyTheme } from "@/theme/colors";
 import { ThemeContext } from "@/stores/theme.store";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { setCurrency } from "@/stores/currency.store";
+import { setRefreshInterval } from "@/stores/refresh.store";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -69,6 +71,8 @@ export default function RootLayout() {
         if (!alive) return;
         setIsDark(!!prefs.darkMode);
         applyTheme(!!prefs.darkMode);
+        await setCurrency(prefs.currency);
+        setRefreshInterval(prefs.refreshInterval);
       } catch {
         // unauthenticated startup / network issue: keep current theme
       }

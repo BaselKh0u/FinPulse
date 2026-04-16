@@ -94,8 +94,12 @@ public class AuthController : ControllerBase
     [HttpPost("forgot-password")]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
-        // Always return the same message to avoid email enumeration
-        await _context.Users.AnyAsync(u => u.Email == request.Email);
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == normalizedEmail);
+        if (user is not null)
+        {
+            await _emailService.SendPasswordResetEmail(user.Email);
+        }
 
         return Ok(new { message = "If this email exists, a reset link has been sent." });
     }

@@ -555,11 +555,22 @@ public class StockController : ControllerBase
             _    => "MMM dd"
         };
 
-        var points = await _context.PriceData
+        var points = (await _context.PriceData
             .Where(p => p.StockId == stock.StockId && p.RecordedAt >= cutoff)
             .OrderBy(p => p.RecordedAt)
             .Select(p => new { p.Price, p.RecordedAt })
-            .ToListAsync();
+            .ToListAsync())
+            .Select(p => (p.Price, p.RecordedAt))
+            .ToList();
+
+        if (points.Count < 8)
+        {
+            var fallbackPoints = await FetchYahooChartPointsAsync(stock.Symbol, range);
+            if (fallbackPoints.Count > points.Count)
+            {
+                points = fallbackPoints;
+            }
+        }
 
         var result = points.Select(p => new
         {
@@ -568,14 +579,100 @@ public class StockController : ControllerBase
             recordedAt = p.RecordedAt
         });
 
+        var from = points.Count > 0 ? points.First().RecordedAt : (DateTime?)null;
+        var to = points.Count > 0 ? points.Last().RecordedAt : (DateTime?)null;
+
         return Ok(new
         {
             range = range.ToUpperInvariant(),
-            from = points.FirstOrDefault()?.RecordedAt,
-            to = points.LastOrDefault()?.RecordedAt,
-            retrievedAt = points.LastOrDefault()?.RecordedAt ?? DateTime.UtcNow,
+            from,
+            to,
+            retrievedAt = to ?? DateTime.UtcNow,
             points = result
         });
+    }
+
+    private async Task<List<(decimal Price, DateTime RecordedAt)>> FetchYahooChartPointsAsync(string symbol, string range)
+    {
+        try
+        {
+            var (yahooRange, interval) = range.ToUpperInvariant() switch
+            {
+                "1D" => ("1d", "5m"),
+                "1W" => ("5d", "30m"),
+                "1M" => ("1mo", "1d"),
+                "3M" => ("3mo", "1d"),
+                "1Y" => ("1y", "1d"),
+                "ALL" => ("5y", "1d"),
+                _ => ("1mo", "1d"),
+            };
+
+            var client = _httpClientFactory.CreateClient();
+            var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(symbol)}?range={yahooRange}&interval={interval}";
+            using var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+            {
+                return [];
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            if (!document.RootElement.TryGetProperty("chart", out var chartRoot) ||
+                !chartRoot.TryGetProperty("result", out var resultArray) ||
+                resultArray.ValueKind != JsonValueKind.Array ||
+                resultArray.GetArrayLength() == 0)
+            {
+                return [];
+            }
+
+            var result = resultArray[0];
+            if (!result.TryGetProperty("timestamp", out var tsArray) || tsArray.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            if (!result.TryGetProperty("indicators", out var indicators) ||
+                !indicators.TryGetProperty("quote", out var quoteArray) ||
+                quoteArray.ValueKind != JsonValueKind.Array ||
+                quoteArray.GetArrayLength() == 0)
+            {
+                return [];
+            }
+
+            var quote = quoteArray[0];
+            if (!quote.TryGetProperty("close", out var closeArray) || closeArray.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            var items = new List<(decimal Price, DateTime RecordedAt)>();
+            var n = Math.Min(tsArray.GetArrayLength(), closeArray.GetArrayLength());
+            for (var i = 0; i < n; i++)
+            {
+                var close = closeArray[i];
+                var ts = tsArray[i];
+                if (close.ValueKind != JsonValueKind.Number || ts.ValueKind != JsonValueKind.Number)
+                {
+                    continue;
+                }
+
+                var price = close.TryGetDecimal(out var d) ? d : (decimal)close.GetDouble();
+                var unix = ts.TryGetInt64(out var t) ? t : (long)ts.GetDouble();
+                if (price <= 0m || unix <= 0)
+                {
+                    continue;
+                }
+
+                items.Add((price, DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime));
+            }
+
+            return items;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Yahoo chart fallback failed for {Symbol} ({Range})", symbol, range);
+            return [];
+        }
     }
 }
 

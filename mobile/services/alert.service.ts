@@ -163,3 +163,23 @@ export async function deleteAlert(alertId: string): Promise<void> {
 
   await apiRequest<void>(`/alerts/${alertId}`, { method: "DELETE" });
 }
+
+export async function fireTestAlert(alertId?: string): Promise<void> {
+  if (USE_MOCK) {
+    return;
+  }
+
+  const uid = Number((await getStoredUserId()) ?? 0);
+  if (uid <= 0) {
+    throw new Error("You must be signed in to test alerts.");
+  }
+
+  await apiRequest<void>("/alerts/debug/fire-test", {
+    method: "POST",
+    body: JSON.stringify({
+      userId: uid,
+      alertId: alertId ? Number(alertId) : undefined,
+      details: "Manual test alert triggered from mobile app.",
+    }),
+  });
+}

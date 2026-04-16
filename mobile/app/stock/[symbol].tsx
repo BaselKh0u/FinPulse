@@ -150,10 +150,14 @@ export default function StockDetailScreen() {
             text: "Remove",
             style: "destructive",
             onPress: async () => {
-              await deleteAlert(alertId);
-              setHasAlert(false);
-              setAlertId(null);
-              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              try {
+                await deleteAlert(alertId);
+                setHasAlert(false);
+                setAlertId(null);
+                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              } catch (e) {
+                AlertDialog.alert("Failed", e instanceof Error ? e.message : "Couldn't remove alert.");
+              }
             },
           },
         ],

@@ -31,3 +31,4 @@ yarn-error.log*
 bin/
 obj/
 server/appsettings.json
+server/local-api-keys.txt

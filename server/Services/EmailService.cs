@@ -68,5 +68,46 @@ namespace Server.Services
                 Console.WriteLine(ex.ToString());
             }
         }
+
+        public async Task SendPasswordResetEmail(string toEmail)
+        {
+            try
+            {
+                var client = new SendGridClient(_apiKey);
+                var from = new EmailAddress(_fromEmail, _fromName);
+                var to = new EmailAddress(toEmail);
+                var subject = "FinPulse password reset request";
+                var loginLink = $"{_publicBaseUrl}/auth/login";
+
+                var htmlContent = $"""
+                    <!DOCTYPE html>
+                    <html>
+                    <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 40px;">
+                      <div style="max-width: 480px; margin: auto; background: #ffffff; border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                        <h2 style="color: #1a1a2e; margin-bottom: 8px;">Password reset requested</h2>
+                        <p style="color: #444; font-size: 15px;">
+                          We received a request to reset your FinPulse password.
+                        </p>
+                        <p style="color: #444; font-size: 15px;">
+                          For now, please use the in-app "Change Password" flow after logging in, or contact support if you are locked out.
+                        </p>
+                        <a href="{loginLink}"
+                           style="display: inline-block; margin-top: 20px; padding: 12px 28px; background-color: #4f8ef7; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 15px; font-weight: bold;">
+                          Open FinPulse
+                        </a>
+                      </div>
+                    </body>
+                    </html>
+                    """;
+
+                var msg = MailHelper.CreateSingleEmail(from, to, subject, plainTextContent: null, htmlContent: htmlContent);
+                await client.SendEmailAsync(msg);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[EmailService] EXCEPTION while sending reset email: {ex.Message}");
+                Console.WriteLine(ex.ToString());
+            }
+        }
     }
 }
