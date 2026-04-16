@@ -14,6 +14,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { getStocks } from "@/services/stock.service";
 import { getMarketData, MarketMood } from "@/services/market.service";
+import { getPortfolioSummary } from "@/services/portfolio.service";
+import { getDataIngestionConfig, type DataIngestionConfig } from "@/services/config.service";
 import { Stock } from "@/models/Stock";
 import WatchlistItem from "@/components/WatchlistItem";
 import { Colors, Fonts } from "@/theme";
@@ -31,8 +33,14 @@ export default function HomeScreen() {
   const [mood, setMood] = useState<MarketMood | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [portfolioSummary, setPortfolioSummary] = useState<{
+    totalBalance: number;
+    todayChange: number;
+    todayChangePercent: number;
+  } | null>(null);
   const [avatarUri, setAvatarUri] = useState<string | null>(getAvatarUri());
   const [currSymbol, setCurrSymbol] = useState(getCurrencySymbol());
+  const [ingestionConfig, setIngestionConfig] = useState<DataIngestionConfig | null>(null);
 
   useEffect(() => {
     return subscribeAvatarUri((uri) => setAvatarUri(uri));
@@ -43,9 +51,16 @@ export default function HomeScreen() {
   }, []);
 
   const loadAll = useCallback(async () => {
-    const [stocksData, marketData] = await Promise.all([getStocks(), getMarketData()]);
+    const [stocksData, marketData, summary, ingestCfg] = await Promise.all([
+      getStocks(),
+      getMarketData(),
+      getPortfolioSummary().catch(() => null),
+      getDataIngestionConfig().catch(() => null),
+    ]);
     setStocks(stocksData);
     setMood(marketData.mood);
+    setPortfolioSummary(summary);
+    setIngestionConfig(ingestCfg);
   }, []);
 
   useEffect(() => {
@@ -99,7 +114,16 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- currSymbol updates when currency changes; convertPrice() reads module FX state
   }, [stocks, currSymbol]);
 
-  const snapPositive = watchlistSnapshot.changeConverted >= 0;
+  const summaryPositive = (portfolioSummary?.todayChange ?? 0) >= 0;
+  const totalBalanceDisplay = portfolioSummary
+    ? convertPrice(portfolioSummary.totalBalance)
+    : watchlistSnapshot.totalConverted;
+  const todayChangeDisplay = portfolioSummary
+    ? convertPrice(portfolioSummary.todayChange)
+    : watchlistSnapshot.changeConverted;
+  const todayPctDisplay = portfolioSummary
+    ? portfolioSummary.todayChangePercent
+    : watchlistSnapshot.pct;
 
   function renderHeader() {
     return (
@@ -131,22 +155,22 @@ export default function HomeScreen() {
           <Text style={styles.balanceLabel}>Watchlist snapshot</Text>
           <Text style={styles.balanceValue}>
             {currSymbol}
-            {watchlistSnapshot.totalConverted.toLocaleString(undefined, {
+            {totalBalanceDisplay.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
           </Text>
           <View style={styles.balanceBottom}>
-            <View style={[styles.pill, !snapPositive && styles.pillNegative]}>
-              <Text style={[styles.pillText, !snapPositive && styles.pillTextNegative]}>
-                {snapPositive ? "↗" : "↘"} {snapPositive ? "+" : "-"}
+            <View style={[styles.pill, !summaryPositive && styles.pillNegative]}>
+              <Text style={[styles.pillText, !summaryPositive && styles.pillTextNegative]}>
+                {summaryPositive ? "↗" : "↘"} {summaryPositive ? "+" : "-"}
                 {currSymbol}
-                {Math.abs(watchlistSnapshot.changeConverted).toLocaleString(undefined, {
+                {Math.abs(todayChangeDisplay).toLocaleString(undefined, {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
                 })}{" "}
-                ({watchlistSnapshot.pct >= 0 ? "+" : ""}
-                {watchlistSnapshot.pct.toFixed(1)}%)
+                ({todayPctDisplay >= 0 ? "+" : ""}
+                {todayPctDisplay.toFixed(1)}%)
               </Text>
             </View>
             <Text style={styles.todayText}>Today</Text>
@@ -178,6 +202,27 @@ export default function HomeScreen() {
               <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
             </View>
           </Pressable>
+        )}
+        {ingestionConfig && (
+          <View style={[styles.providerBanner, ingestionConfig.alphaVantageCooldownActive && styles.providerBannerWarn]}>
+            <Ionicons
+              name={ingestionConfig.alphaVantageCooldownActive ? "warning-outline" : "cloud-done-outline"}
+              size={16}
+              color={ingestionConfig.alphaVantageCooldownActive ? Colors.warning : Colors.success}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.providerTitle}>
+                {ingestionConfig.alphaVantageCooldownActive
+                  ? "Live provider cooling down"
+                  : "Live provider status healthy"}
+              </Text>
+              <Text style={styles.providerText}>
+                {ingestionConfig.alphaVantageCooldownActive
+                  ? `Using cached DB data until ${new Date(ingestionConfig.alphaVantageBlockedUntilUtc ?? "").toLocaleString()}`
+                  : `Alpha Vantage fetch schedule: every ${ingestionConfig.pollingIntervalMinutes} min`}
+              </Text>
+            </View>
+          </View>
         )}
 
         <View style={styles.sectionRow}>
@@ -361,6 +406,23 @@ const createStyles = () => StyleSheet.create({
   pulseRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   pulseBar: { height: 6, backgroundColor: Colors.iconBackground, borderRadius: 3, overflow: "hidden" },
   pulseBarFill: { height: 6, borderRadius: 3 },
+  providerBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  providerBannerWarn: {
+    borderColor: Colors.warning,
+    backgroundColor: Colors.warningLight,
+  },
+  providerTitle: { fontSize: 13, color: Colors.textPrimary, fontFamily: Fonts.semiBold },
+  providerText: { marginTop: 2, fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.medium, lineHeight: 17 },
 
   sectionRow: {
     flexDirection: "row",

@@ -27,6 +27,10 @@ import {
   getPreferences,
   updatePreferences,
   updateProfile,
+  updateAvatar,
+  registerDeviceToken,
+  changePassword,
+  deleteAccount,
   logout,
 } from "@/services/user.service";
 import { Colors, Fonts } from "@/theme";
@@ -47,6 +51,7 @@ import {
   setAlertSoundEnabled,
   setPushEnabled,
 } from "@/services/notification.service";
+import { getDataIngestionConfig, type DataIngestionConfig } from "@/services/config.service";
 import { setRefreshInterval as setGlobalRefresh } from "@/stores/refresh.store";
 
 
@@ -78,11 +83,17 @@ export default function ProfileScreen() {
   const [editLast, setEditLast] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [passwordModal, setPasswordModal] = useState(false);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
 
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [currencyModal, setCurrencyModal] = useState(false);
   const [refreshModal, setRefreshModal] = useState(false);
   const [biometricBusy, setBiometricBusy] = useState(false);
+  const [ingestion, setIngestion] = useState<DataIngestionConfig | null>(null);
 
   const editScrollRef = useRef<ScrollView>(null);
 
@@ -90,6 +101,12 @@ export default function ProfileScreen() {
     const [u, p] = await Promise.all([getUserProfile(), getPreferences()]);
     setUser(u);
     setPrefs(p);
+    setAvatarUri(u.avatarUrl ?? null);
+    setGlobalAvatar(u.avatarUrl ?? null);
+  }, []);
+
+  useEffect(() => {
+    getDataIngestionConfig().then(setIngestion);
   }, []);
 
   useEffect(() => {
@@ -98,7 +115,12 @@ export default function ProfileScreen() {
     })();
   }, [load]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  useFocusEffect(
+    useCallback(() => {
+      load();
+      getDataIngestionConfig().then(setIngestion);
+    }, [load]),
+  );
 
   function pickAvatar() {
     Alert.alert("Change Profile Photo", "Choose a source", [
@@ -116,8 +138,10 @@ export default function ProfileScreen() {
             quality: 0.8,
           });
           if (!result.canceled && result.assets[0]) {
-            setAvatarUri(result.assets[0].uri);
-            setGlobalAvatar(result.assets[0].uri);
+            const nextUri = result.assets[0].uri;
+            setAvatarUri(nextUri);
+            setGlobalAvatar(nextUri);
+            await updateAvatar(nextUri);
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
         },
@@ -137,8 +161,10 @@ export default function ProfileScreen() {
             quality: 0.8,
           });
           if (!result.canceled && result.assets[0]) {
-            setAvatarUri(result.assets[0].uri);
-            setGlobalAvatar(result.assets[0].uri);
+            const nextUri = result.assets[0].uri;
+            setAvatarUri(nextUri);
+            setGlobalAvatar(nextUri);
+            await updateAvatar(nextUri);
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           }
         },
@@ -254,11 +280,50 @@ export default function ProfileScreen() {
       "This action is irreversible. All your data, watchlists, and alerts will be permanently deleted.",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => {
-          Alert.alert("Account Deleted", "Your account has been deleted.");
-        }},
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteAccount();
+              await logout();
+              Alert.alert("Account Deleted", "Your account has been deleted.");
+              router.replace("/auth/login");
+            } catch (e) {
+              Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete account.");
+            }
+          },
+        },
       ]
     );
+  }
+
+  async function onChangePassword() {
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      Alert.alert("Missing fields", "Please fill all password fields.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert("Mismatch", "New password and confirmation do not match.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      Alert.alert("Weak password", "New password must be at least 8 characters.");
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      await changePassword(oldPassword, newPassword);
+      setPasswordModal(false);
+      setOldPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      Alert.alert("Success", "Password changed successfully.");
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to change password.");
+    } finally {
+      setPasswordSaving(false);
+    }
   }
 
   if (loading || !user || !prefs) {
@@ -321,10 +386,7 @@ export default function ProfileScreen() {
           <SettingsRow icon="person-outline" label="Edit Profile" onPress={openEditProfile} />
           <Divider />
           <SettingsRow icon="lock-closed-outline" label="Change Password" onPress={() =>
-            Alert.alert("Change Password", "This will send a password reset link to your email.", [
-              { text: "Cancel", style: "cancel" },
-              { text: "Send Link", onPress: () => Alert.alert("Sent", "Check your email for the reset link.") },
-            ])
+            setPasswordModal(true)
           } />
           <Divider />
           <SettingsRow
@@ -356,7 +418,10 @@ export default function ProfileScreen() {
             value={prefs.pushNotifications}
             onToggle={async (v) => {
               if (v) {
-                await registerForPushNotifications({ silent: false });
+                const token = await registerForPushNotifications({ silent: false });
+                if (token) {
+                  await registerDeviceToken(token, Platform.OS);
+                }
               }
               setPushEnabled(v);
               await togglePref("pushNotifications", v);
@@ -375,7 +440,11 @@ export default function ProfileScreen() {
           />
           <Divider />
           <SettingsToggle icon="moon-outline" label="Dark Mode" value={isDark}
-            onToggle={() => { toggleDark(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }} />
+            onToggle={async (v) => {
+              toggleDark();
+              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              await updatePreferences({ darkMode: v });
+            }} />
         </View>
 
         {/* Data Section */}
@@ -390,6 +459,31 @@ export default function ProfileScreen() {
               {REFRESH_OPTIONS.find((r) => r.key === prefs.refreshInterval)?.label}
             </Text>}
             onPress={() => setRefreshModal(true)} />
+          {ingestion && (
+            <>
+              <Divider />
+              <View style={styles.ingestionBlock}>
+                <View style={styles.ingestionHeader}>
+                  <Ionicons name="server-outline" size={20} color={Colors.textSecondary} />
+                  <Text style={styles.ingestionTitle}>Server data gathering</Text>
+                </View>
+                <Text style={styles.ingestionLine}>
+                  Full refresh cycle: every {ingestion.pollingIntervalMinutes} min
+                </Text>
+                <Text style={styles.ingestionLine}>
+                  Between symbols: {ingestion.delayBetweenSymbolIngestionSeconds}s · Between Alpha Vantage calls:{" "}
+                  {ingestion.delayBetweenAlphaVantageCallsSeconds}s
+                </Text>
+                <Text style={styles.ingestionHint}>
+                  Change these in server appsettings (AlphaVantage section) or environment variables. A new API key only
+                  resets your quota with Alpha Vantage; spacing requests still helps avoid per-minute limits.
+                </Text>
+                {!ingestion.hasAlphaVantageKey && (
+                  <Text style={styles.ingestionWarning}>Alpha Vantage API key is not configured on the server.</Text>
+                )}
+              </View>
+            </>
+          )}
         </View>
 
         {/* Support Section */}
@@ -476,6 +570,62 @@ export default function ProfileScreen() {
                 </Pressable>
               </View>
             </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Change Password Modal */}
+      <Modal visible={passwordModal} transparent animationType="slide" onRequestClose={() => setPasswordModal(false)}>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
+        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.35)" }}
+            onPress={() => { Keyboard.dismiss(); setPasswordModal(false); }}
+          />
+          <View style={styles.editSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Change Password</Text>
+            <Text style={styles.fieldLabel}>Current Password</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={oldPassword}
+              onChangeText={setOldPassword}
+              secureTextEntry
+              placeholder="Current password"
+              placeholderTextColor={Colors.placeholder}
+            />
+
+            <Text style={styles.fieldLabel}>New Password</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={newPassword}
+              onChangeText={setNewPassword}
+              secureTextEntry
+              placeholder="New password"
+              placeholderTextColor={Colors.placeholder}
+            />
+
+            <Text style={styles.fieldLabel}>Confirm New Password</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry
+              placeholder="Confirm new password"
+              placeholderTextColor={Colors.placeholder}
+            />
+
+            <View style={styles.modalBtns}>
+              <Pressable style={styles.cancelBtn} onPress={() => setPasswordModal(false)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable style={styles.saveBtn} onPress={onChangePassword} disabled={passwordSaving}>
+                <Text style={styles.saveBtnText}>{passwordSaving ? "Saving..." : "Save"}</Text>
+              </Pressable>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -630,6 +780,13 @@ function createStyles() { return StyleSheet.create({
   rowTrailing: { marginLeft: 8 },
 
   trailingValue: { fontSize: 14, color: Colors.accent, fontFamily: Fonts.semiBold },
+
+  ingestionBlock: { paddingHorizontal: 16, paddingVertical: 14, paddingBottom: 18 },
+  ingestionHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  ingestionTitle: { fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.semiBold },
+  ingestionLine: { fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.medium, lineHeight: 19, marginBottom: 4 },
+  ingestionHint: { fontSize: 12, color: Colors.textTertiary, fontFamily: Fonts.medium, lineHeight: 17, marginTop: 6 },
+  ingestionWarning: { fontSize: 12, color: Colors.warning, fontFamily: Fonts.semiBold, marginTop: 8 },
 
   divider: { height: 1, backgroundColor: Colors.divider, marginLeft: 66 },
 

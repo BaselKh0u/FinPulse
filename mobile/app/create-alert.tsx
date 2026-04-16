@@ -122,8 +122,8 @@ export default function CreateAlertScreen() {
       Alert.alert("Alert Created", `You'll be notified about ${selectedStock.symbol}.`, [
         { text: "OK", onPress: () => router.back() },
       ]);
-    } catch {
-      Alert.alert("Error", "Failed to create alert. Please try again.");
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to create alert. Please try again.");
     } finally {
       setSaving(false);
     }

@@ -23,6 +23,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_NAME_LEN = 2;
 const MAX_NAME_LEN = 60;
 const MIN_PASSWORD_LEN = 8;
+const PASSWORD_RULE_REGEX = /^(?=.*[A-Za-z])(?=.*\d).+$/;
 
 function registerErrorMessage(err: unknown): string {
   if (err instanceof Error) {
@@ -48,6 +49,8 @@ export default function RegisterScreen() {
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showValidation, setShowValidation] = useState(false);
+  const [serverEmailError, setServerEmailError] = useState<string | null>(null);
+  const [serverPasswordError, setServerPasswordError] = useState<string | null>(null);
 
   const lastNameRef = useRef<TextInput>(null);
   const emailRef = useRef<TextInput>(null);
@@ -56,6 +59,8 @@ export default function RegisterScreen() {
 
   useEffect(() => {
     setShowValidation(false);
+    setServerEmailError(null);
+    setServerPasswordError(null);
   }, [firstName, lastName, email, password, password2]);
 
   const tFirst = firstName.trim();
@@ -85,14 +90,16 @@ export default function RegisterScreen() {
       ? "Email is required."
       : showValidation && !EMAIL_REGEX.test(tEmail)
         ? "Enter a valid email address."
-        : undefined;
+        : serverEmailError ?? undefined;
 
   const passwordError =
     showValidation && password.length === 0
       ? "Password is required."
       : showValidation && password.length < MIN_PASSWORD_LEN
         ? `Use at least ${MIN_PASSWORD_LEN} characters.`
-        : undefined;
+        : showValidation && !PASSWORD_RULE_REGEX.test(password)
+          ? "Password must include at least one letter and one number."
+          : serverPasswordError ?? undefined;
 
   const password2Error =
     showValidation && password2.length === 0
@@ -118,12 +125,15 @@ export default function RegisterScreen() {
       tLast.length > MAX_NAME_LEN ||
       !EMAIL_REGEX.test(tEmail) ||
       password.length < MIN_PASSWORD_LEN ||
+      !PASSWORD_RULE_REGEX.test(password) ||
       password !== password2
     ) {
       return;
     }
 
     setLoading(true);
+    setServerEmailError(null);
+    setServerPasswordError(null);
     try {
       await register({
         firstName: tFirst,
@@ -133,12 +143,27 @@ export default function RegisterScreen() {
       });
       await runPostRegistrationPermissionPrompts();
       Alert.alert(
-        "Account created",
-        "You can sign in with your email and password.\n\nIf you skipped any permission, you can change it later in system Settings or in Profile (e.g. Face ID under Biometric login).",
-        [{ text: "OK", onPress: () => router.replace("/auth/login") }]
+        "Verify your email",
+        `We sent a verification email to ${tEmail}. Please verify your email before continuing.`,
+        [
+          { text: "Back to Login", onPress: () => router.replace("/auth/login") },
+        ]
       );
     } catch (err) {
-      Alert.alert("Registration failed", registerErrorMessage(err));
+      const message = registerErrorMessage(err);
+      const normalized = message.toLowerCase();
+      if (normalized.includes("already exists")) {
+        setServerEmailError("This email is already in use.");
+        return;
+      }
+      if (
+        normalized.includes("password") &&
+        (normalized.includes("required") || normalized.includes("at least") || normalized.includes("must"))
+      ) {
+        setServerPasswordError(message);
+        return;
+      }
+      Alert.alert("Registration failed", message);
     } finally {
       setLoading(false);
     }
@@ -276,7 +301,7 @@ export default function RegisterScreen() {
             {password2Error ? <Text style={styles.fieldError}>{password2Error}</Text> : null}
 
             <Text style={styles.hint}>
-              Password must be at least {MIN_PASSWORD_LEN} characters. Use a mix of letters and numbers for a stronger password.
+              Password must be at least {MIN_PASSWORD_LEN} characters and include at least one letter and one number.
             </Text>
 
             <Pressable

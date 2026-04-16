@@ -40,7 +40,8 @@ export default function SearchScreen() {
   }, [query]);
 
   function renderItem({ item }: { item: Stock }) {
-    const isUp = item.changePercent >= 0;
+    const changePercent = item.changePercent ?? 0;
+    const isUp = changePercent >= 0;
 
     return (
       <Pressable
@@ -59,7 +60,7 @@ export default function SearchScreen() {
         <View style={styles.right}>
           <Text style={styles.price}>{cs}{convertPrice(item.price).toFixed(2)}</Text>
           <Text style={[styles.change, isUp ? styles.up : styles.down]}>
-            {isUp ? "+" : ""}{item.changePercent.toFixed(2)}%
+            {isUp ? "+" : ""}{changePercent.toFixed(2)}%
           </Text>
         </View>
       </Pressable>

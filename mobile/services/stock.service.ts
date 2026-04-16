@@ -27,7 +27,20 @@ let mockStocks: Stock[] = [
 
 export async function getStocks(): Promise<Stock[]> {
   if (USE_MOCK) return Promise.resolve(mockStocks);
-  return apiRequest<Stock[]>("/stock");
+  const rows = await apiRequest<Array<{
+    stockId: number;
+    symbol: string;
+    companyName?: string;
+    price?: number;
+  }>>("/stock");
+  return rows.map((row) => ({
+    stockId: row.stockId,
+    symbol: row.symbol,
+    name: row.companyName ?? row.symbol,
+    price: row.price ?? 0,
+    change: 0,
+    changePercent: 0,
+  }));
 }
 
 export async function addStock(newStock: Stock): Promise<void> {
@@ -80,7 +93,24 @@ export async function searchStocks(query: string): Promise<Stock[]> {
     );
   }
 
-  return apiRequest<Stock[]>(`/stock/search?q=${encodeURIComponent(query)}`);
+  const rows = await apiRequest<Array<{
+    stockId?: number;
+    symbol: string;
+    companyName?: string;
+    sector?: string;
+    price?: number;
+    change?: number;
+    changePercent?: number;
+  }>>(`/stock/search?q=${encodeURIComponent(query)}`);
+
+  return rows.map((row) => ({
+    stockId: row.stockId,
+    symbol: row.symbol,
+    name: row.companyName ?? row.symbol,
+    price: row.price ?? 0,
+    change: row.change ?? 0,
+    changePercent: row.changePercent ?? 0,
+  }));
 }
 
 function generateChart(base: number, points = 30): number[] {
@@ -157,7 +187,52 @@ export async function getStockDetails(symbol: string): Promise<StockDetails> {
     return { ...base, ...extra };
   }
 
-  return apiRequest<StockDetails>(`/stock/${symbol}/details`);
+  const dto = await apiRequest<{
+    stockId: number;
+    symbol: string;
+    companyName?: string;
+    sector?: string;
+    latestPrice?: number;
+    priceHistory?: Array<{ price: number }>;
+  }>(`/stock/${symbol}/details`);
+
+  const history = dto.priceHistory?.map((p) => p.price) ?? [];
+  const latestPrice = dto.latestPrice ?? history.at(-1) ?? 0;
+  const firstPrice = history[0] ?? latestPrice;
+  const change = latestPrice - firstPrice;
+  const changePercent = firstPrice ? (change / firstPrice) * 100 : 0;
+
+  return {
+    stockId: dto.stockId,
+    symbol: dto.symbol,
+    name: dto.companyName ?? dto.symbol,
+    price: latestPrice,
+    change,
+    changePercent,
+    description: "Detailed company information will be available when connected to enriched backend data.",
+    sector: dto.sector ?? "N/A",
+    industry: "N/A",
+    employees: "N/A",
+    headquarters: "N/A",
+    stabilityScore: 50,
+    keyStats: {
+      open: firstPrice,
+      high: history.length ? Math.max(...history) : latestPrice,
+      low: history.length ? Math.min(...history) : latestPrice,
+      close: latestPrice,
+      volume: "N/A",
+      avgVolume: "N/A",
+      marketCap: "N/A",
+      peRatio: null,
+      week52High: history.length ? Math.max(...history) : latestPrice,
+      week52Low: history.length ? Math.min(...history) : latestPrice,
+      dividend: "N/A",
+      beta: 1.0,
+    },
+    sentiment: { bullish: 33, bearish: 33, neutral: 34, score: 0, mentions: 0, trending: false },
+    news: [],
+    chartData: history.length ? history : [latestPrice],
+  };
 }
 
 export async function getStockHistory(symbol: string, range: string): Promise<number[]> {
@@ -166,5 +241,10 @@ export async function getStockHistory(symbol: string, range: string): Promise<nu
     return generateChart(base, 40);
   }
 
-  return apiRequest<number[]>(`/stock/${symbol}/history?range=${encodeURIComponent(range)}`);
+  const points = await apiRequest<Array<{ value: number }>>(
+    `/stock/${symbol}/chart?range=${encodeURIComponent(range)}`
+  );
+  return points
+    .map((p) => (typeof p.value === "number" ? p.value : Number(p.value)))
+    .filter((v) => Number.isFinite(v));
 }

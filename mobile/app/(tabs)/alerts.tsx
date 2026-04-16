@@ -85,8 +85,14 @@ export default function AlertsScreen() {
 
   async function onToggle(id: string, value: boolean) {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await toggleAlert(id, value);
+    const previous = alerts;
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isActive: value } : a)));
+    try {
+      await toggleAlert(id, value);
+    } catch (e) {
+      setAlerts(previous);
+      Alert.alert("Update failed", e instanceof Error ? e.message : "Couldn't update alert. Please try again.");
+    }
   }
 
   async function onSwipeDelete(alert: AlertModel) {

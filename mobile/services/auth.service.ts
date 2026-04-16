@@ -21,15 +21,15 @@ export interface RegisterRequest {
 
 export interface AuthResponse {
   token: string;
-  userId: number;
+  userId: string;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 async function persistSessionAfterPasswordLogin(res: AuthResponse): Promise<void> {
-  await saveSession(res.token, res.userId);
+  await saveSession(res.token, String(res.userId));
   if (await isBiometricEnabled()) {
-    await stashSessionForBiometricRelogin(res.token, res.userId);
+    await stashSessionForBiometricRelogin(res.token, String(res.userId));
   } else {
     await clearBiometricReloginSession();
   }
@@ -45,13 +45,14 @@ export async function login(data: LoginRequest): Promise<AuthResponse> {
     return res;
   }
 
-  const res = await apiRequest<AuthResponse>("/auth/login", {
+  const dto = await apiRequest<{ token: string; userId: number | string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({
       email: data.email,
-      passwordHash: data.password,
+      password: data.password,
     }),
   });
+  const res: AuthResponse = { token: dto.token, userId: String(dto.userId) };
   await persistSessionAfterPasswordLogin(res);
   return res;
 }
@@ -65,17 +66,18 @@ export async function register(data: RegisterRequest): Promise<AuthResponse> {
     return { token: "mock-token-456", userId: "mock-user-2" };
   }
 
-  const response = await apiRequest<{ message: string }>("/auth/register", {
+  const dto = await apiRequest<{ token: string; userId: number | string }>("/auth/register", {
     method: "POST",
     body: JSON.stringify({
       fullName: `${data.firstName} ${data.lastName}`.trim(),
       email: data.email,
-      passwordHash: data.password,
+      password: data.password,
     }),
   });
 
-  // Register endpoint currently returns message only, so user logs in afterward.
-  return { token: "server-session", userId: 0 };
+  const response: AuthResponse = { token: dto.token, userId: String(dto.userId) };
+  await persistSessionAfterPasswordLogin(response);
+  return response;
 }
 
 export async function forgotPassword(email: string): Promise<void> {
@@ -84,8 +86,10 @@ export async function forgotPassword(email: string): Promise<void> {
     return;
   }
 
-  // Backend forgot-password endpoint does not exist yet.
-  return;
+  await apiRequest<{ message: string }>("/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
 }
 
 export function logoutLocalSession() {

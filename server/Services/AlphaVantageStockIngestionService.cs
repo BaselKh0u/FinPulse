@@ -11,6 +11,8 @@ namespace Server.Services
 {
     public class AlphaVantageStockIngestionService : IStockIngestionService
     {
+        /// <summary>Separates channel (e.g. Reddit, Bloomberg) from headline in <see cref="SentimentAnalysis.Source"/>.</summary>
+        internal const char SourceChannelSeparator = '\u2016'; // ‖ unlikely in titles
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _dbContext;
         private readonly AlphaVantageOptions _options;
@@ -54,6 +56,17 @@ namespace Server.Services
                 _logger.LogWarning("Skipping ingestion because AlphaVantage API key is empty.");
                 return;
             }
+            if (AlphaVantageRateLimitGuard.IsBlocked(out var blockedUntilUtc, out var reason))
+            {
+                _logger.LogWarning(
+                    "Skipping ingestion due to Alpha Vantage cooldown until {BlockedUntil}. Reason: {Reason}",
+                    blockedUntilUtc, reason);
+                return;
+            }
+
+            int successCount = 0;
+            int failureCount = 0;
+            var symbolIndex = 0;
 
             foreach (var symbolRaw in _options.Symbols)
             {
@@ -63,21 +76,65 @@ namespace Server.Services
                     continue;
                 }
 
+                if (symbolIndex > 0)
+                {
+                    await DelayBetweenSymbolsAsync(cancellationToken);
+                }
+
+                symbolIndex++;
+
                 try
                 {
                     var stock = await GetOrCreateStockAsync(symbol, cancellationToken);
                     await IngestQuoteAsync(stock, cancellationToken);
+                    await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
                     await IngestNewsAsync(stock, cancellationToken);
+                    await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
                     await IngestRedditSignalsAsync(stock, cancellationToken);
                     await UpdateConfidenceScoreAsync(stock, cancellationToken);
+                    successCount++;
+                }
+                catch (HttpRequestException ex) when (ex.Message.Contains("429") || ex.Message.Contains("rate"))
+                {
+                    _logger.LogWarning("Rate limit hit for symbol {Symbol}. Stopping ingestion to avoid further throttling.", symbol);
+                    failureCount++;
+                    break; // Stop trying to avoid more rate limits
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Ingestion failed for symbol {Symbol}.", symbol);
+                    failureCount++;
                 }
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+            
+            if (successCount > 0)
+                _logger.LogInformation("Stock ingestion completed: {SuccessCount} symbols updated, {FailureCount} failed.", successCount, failureCount);
+            else if (failureCount > 0)
+                _logger.LogWarning("Stock ingestion failed for all {Count} symbols. Check API key and rate limits.", failureCount);
+        }
+
+        private Task DelayBetweenAlphaVantageCallsAsync(CancellationToken cancellationToken)
+        {
+            var seconds = Math.Clamp(_options.DelayBetweenAlphaVantageCallsSeconds, 0, 600);
+            if (seconds <= 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            return Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
+        }
+
+        private Task DelayBetweenSymbolsAsync(CancellationToken cancellationToken)
+        {
+            var seconds = Math.Clamp(_options.DelayBetweenSymbolIngestionSeconds, 0, 3600);
+            if (seconds <= 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            return Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
         }
 
         private async Task<Stock> GetOrCreateStockAsync(string symbol, CancellationToken cancellationToken)
@@ -110,6 +167,26 @@ namespace Server.Services
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
+            // Check for rate limit message
+            if (document.RootElement.TryGetProperty("Note", out var noteProp))
+            {
+                var note = noteProp.GetString() ?? "";
+                if (note.Contains("rate limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    AlphaVantageRateLimitGuard.MarkIfLimited(note);
+                    throw new HttpRequestException("Alpha Vantage rate limit hit: " + note);
+                }
+            }
+            if (document.RootElement.TryGetProperty("Information", out var infoProp))
+            {
+                var info = infoProp.GetString() ?? "";
+                AlphaVantageRateLimitGuard.MarkIfLimited(info);
+                if (info.Contains("requests per day", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new HttpRequestException("Alpha Vantage daily limit hit: " + info);
+                }
+            }
+
             if (!document.RootElement.TryGetProperty("Global Quote", out var quote))
             {
                 return;
@@ -121,7 +198,8 @@ namespace Server.Services
             }
 
             TryGetLong(quote, "06. volume", out var volume);
-            var recordedAt = TryGetDate(quote, "07. latest trading day") ?? DateTime.UtcNow;
+            // Use ingestion time to preserve intraday history across polling cycles.
+            var recordedAt = DateTime.UtcNow;
 
             var exists = await _dbContext.PriceData
                 .AnyAsync(p => p.StockId == stock.StockId && p.RecordedAt == recordedAt, cancellationToken);
@@ -148,6 +226,26 @@ namespace Server.Services
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+            // Check for rate limit message
+            if (document.RootElement.TryGetProperty("Note", out var noteProp))
+            {
+                var note = noteProp.GetString() ?? "";
+                if (note.Contains("rate limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    AlphaVantageRateLimitGuard.MarkIfLimited(note);
+                    throw new HttpRequestException("Alpha Vantage rate limit hit: " + note);
+                }
+            }
+            if (document.RootElement.TryGetProperty("Information", out var infoProp))
+            {
+                var info = infoProp.GetString() ?? "";
+                AlphaVantageRateLimitGuard.MarkIfLimited(info);
+                if (info.Contains("requests per day", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new HttpRequestException("Alpha Vantage daily limit hit: " + info);
+                }
+            }
 
             if (!document.RootElement.TryGetProperty("feed", out var feed) || feed.ValueKind != JsonValueKind.Array)
             {
@@ -177,16 +275,22 @@ namespace Server.Services
                     ? GetJsonDecimal(scoreProp)
                     : 0m;
 
-                var source = item.TryGetProperty("title", out var titleProp)
-                    ? GetJsonString(titleProp) ?? "AlphaVantage"
-                    : "AlphaVantage";
+                var headline = item.TryGetProperty("title", out var titleProp)
+                    ? GetJsonString(titleProp) ?? "Article"
+                    : "Article";
+                var publisher = item.TryGetProperty("source", out var srcProp)
+                    ? GetJsonString(srcProp)
+                    : null;
+                var channel = !string.IsNullOrWhiteSpace(publisher)
+                    ? publisher.Trim()
+                    : "News";
 
                 _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                 {
                     StockId = stock.StockId,
                     SentimentScore = sentimentScore,
                     SentimentLabel = sentimentLabel,
-                    Source = source,
+                    Source = $"{channel}{SourceChannelSeparator}{headline}",
                     AnalyzedAt = publishedAt
                 });
             }
@@ -235,12 +339,18 @@ namespace Server.Services
                 }
 
                 var score = EstimateSentimentFromTitle(title);
+                var headline = title.Trim();
+                if (headline.Length > 400)
+                {
+                    headline = headline[..400];
+                }
+
                 _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                 {
                     StockId = stock.StockId,
                     SentimentScore = score,
                     SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                    Source = $"Reddit: {title}",
+                    Source = $"Reddit{SourceChannelSeparator}{headline}",
                     AnalyzedAt = createdUtc
                 });
             }
@@ -249,12 +359,31 @@ namespace Server.Services
         private static decimal EstimateSentimentFromTitle(string text)
         {
             var lower = text.ToLowerInvariant();
-            var positives = new[] { "beat", "growth", "surge", "bull", "strong", "upgrade", "profit" };
-            var negatives = new[] { "miss", "drop", "bear", "weak", "downgrade", "lawsuit", "decline" };
+            
+            // Positive indicators
+            var positives = new[] { 
+                "beat", "growth", "surge", "bull", "strong", "upgrade", "profit", "gains", 
+                "rally", "soar", "boom", "excellent", "fantastic", "amazing", "huge", "rocket",
+                "momentum", "positive", "outperform", "bullish", "buy", "recommend", "surge"
+            };
+            
+            // Negative indicators
+            var negatives = new[] { 
+                "miss", "drop", "bear", "weak", "downgrade", "lawsuit", "decline", "crash",
+                "loss", "falling", "terrible", "awful", "horrible", "tank", "plunge", "risk",
+                "concern", "selloff", "bearish", "sell", "warning", "loss", "bankruptcy"
+            };
 
-            var positiveHits = positives.Count(lower.Contains);
-            var negativeHits = negatives.Count(lower.Contains);
-            var score = (positiveHits - negativeHits) * 0.2m;
+            var positiveHits = positives.Count(p => lower.Contains(p));
+            var negativeHits = negatives.Count(p => lower.Contains(p));
+            
+            // Calculate score: more hits = stronger sentiment
+            var score = 0m;
+            if (positiveHits > 0 || negativeHits > 0)
+            {
+                score = (positiveHits - negativeHits) * 0.15m; // Scale down a bit
+            }
+            
             return Math.Clamp(score, -1m, 1m);
         }
 

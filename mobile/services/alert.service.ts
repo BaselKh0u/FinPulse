@@ -1,6 +1,22 @@
 import { apiRequest, USE_MOCK } from "./api";
 import { Alert } from "../models/Alert";
 import { formatPrice } from "../stores/currency.store";
+import { getStoredUserId } from "@/stores/auth.storage";
+
+function normalizeConditionType(v: unknown): string {
+  if (v === 1 || v === "1") return "PriceTarget";
+  if (v === 2 || v === "2") return "PercentVolatility";
+  if (v === 3 || v === "3") return "ReportReleased";
+  if (typeof v === "string" && v.trim()) return v.trim();
+  return "";
+}
+
+function normalizeDirection(v: unknown): string {
+  if (v === 1 || v === "1") return "Above";
+  if (v === 2 || v === "2") return "Below";
+  if (typeof v === "string" && v.trim()) return v.trim();
+  return "Above";
+}
 
 let mockAlerts: Alert[] = [
   {
@@ -43,22 +59,25 @@ let mockAlerts: Alert[] = [
 export async function getAlerts(): Promise<Alert[]> {
   if (USE_MOCK) return [...mockAlerts];
 
-  const userId = getSessionUserId();
+  const userId = await getStoredUserId();
   if (!userId) {
     return [];
   }
 
   const rows = await apiRequest<any[]>(`/alerts/user/${userId}`);
-  return rows.map((r) => ({
+  return rows.map((r) => {
+    const conditionType = normalizeConditionType(r.conditionType);
+    const direction = normalizeDirection(r.direction);
+    return {
     id: String(r.alertId),
     stockId: r.stockId,
     symbol: String(r.symbol ?? r.stockId),
     type:
-      r.conditionType === "PriceTarget"
-        ? r.direction === "Below"
+      conditionType === "PriceTarget"
+        ? direction === "Below"
           ? "price_below"
           : "price_above"
-        : r.conditionType === "PercentVolatility"
+        : conditionType === "PercentVolatility"
           ? "volatility"
           : "earnings",
     targetPrice: r.targetPrice ?? undefined,
@@ -66,7 +85,8 @@ export async function getAlerts(): Promise<Alert[]> {
     description: r.message || "Alert",
     isActive: Boolean(r.isActive),
     createdAt: r.createdAt,
-  }));
+  };
+  });
 }
 
 export async function createAlert(
@@ -82,6 +102,11 @@ export async function createAlert(
     return newAlert;
   }
 
+  const uid = Number((await getStoredUserId()) ?? 0);
+  if (uid <= 0) {
+    throw new Error("You must be signed in to create alerts.");
+  }
+
   const conditionType =
     alert.type === "volatility"
       ? "PercentVolatility"
@@ -93,7 +118,7 @@ export async function createAlert(
   const response = await apiRequest<{ alertId: number }>("/alerts", {
     method: "POST",
     body: JSON.stringify({
-      userId: getSessionUserId() ?? 0,
+      userId: uid,
       stockId: alert.stockId ?? 0,
       symbol: alert.symbol,
       conditionType,
@@ -120,7 +145,12 @@ export async function toggleAlert(alertId: string, isActive: boolean): Promise<v
     return;
   }
 
-  if (!isActive) {
+  if (isActive) {
+    await apiRequest<void>(`/alerts/${alertId}/toggle`, {
+      method: "PATCH",
+      body: JSON.stringify({ isActive: true }),
+    });
+  } else {
     await apiRequest<void>(`/alerts/${alertId}/deactivate`, { method: "POST" });
   }
 }
@@ -131,5 +161,5 @@ export async function deleteAlert(alertId: string): Promise<void> {
     return;
   }
 
-  await apiRequest<void>(`/alerts/${alertId}/deactivate`, { method: "POST" });
+  await apiRequest<void>(`/alerts/${alertId}`, { method: "DELETE" });
 }

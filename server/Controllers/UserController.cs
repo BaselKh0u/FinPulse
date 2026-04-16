@@ -41,6 +41,26 @@ public class UserController : ControllerBase
         });
     }
 
+    // GET: api/User/{id}
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetUserById(int id)
+    {
+        var user = await _context.Users.FindAsync(id);
+        if (user == null)
+            return NotFound(new { message = "User not found." });
+
+        return Ok(new
+        {
+            userId = user.UserId,
+            fullName = user.FullName,
+            email = user.Email,
+            phone = user.Phone,
+            avatarUrl = user.AvatarUrl,
+            isVerified = user.IsVerified,
+            createdAt = user.CreatedAt
+        });
+    }
+
     // PATCH: api/User/profile
     [HttpPatch("profile")]
     public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request)

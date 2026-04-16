@@ -66,7 +66,8 @@ export default function AddStockScreen() {
   }
 
   function renderItem({ item }: { item: Stock }) {
-    const isUp = item.changePercent >= 0;
+    const changePercent = item.changePercent ?? 0;
+    const isUp = changePercent >= 0;
     const alreadyAdded = watchlistSymbols.has(item.symbol.toUpperCase());
 
     return (
@@ -83,7 +84,7 @@ export default function AddStockScreen() {
         <View style={styles.priceCol}>
           <Text style={styles.price}>{cs}{convertPrice(item.price).toFixed(2)}</Text>
           <Text style={[styles.changeText, isUp ? styles.textUp : styles.textDown]}>
-            {isUp ? "+" : ""}{item.changePercent.toFixed(2)}%
+            {isUp ? "+" : ""}{changePercent.toFixed(2)}%
           </Text>
         </View>
 

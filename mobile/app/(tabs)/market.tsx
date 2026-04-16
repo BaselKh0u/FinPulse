@@ -95,12 +95,17 @@ export default function MarketScreen() {
     );
   }
 
-  const filteredNews = activeTab === "all"
-    ? data.news
-    : data.news.filter((n) => n.sentiment === activeTab);
+  const trending = data.trending ?? [];
+  const sources = data.sources ?? [];
+  const movers = data.movers ?? [];
+  const news = data.news ?? [];
 
-  const gainers = data.movers.filter((m) => m.direction === "up");
-  const losers = data.movers.filter((m) => m.direction === "down");
+  const filteredNews = activeTab === "all"
+    ? news
+    : news.filter((n) => n.sentiment === activeTab);
+
+  const gainers = movers.filter((m) => m.direction === "up");
+  const losers = movers.filter((m) => m.direction === "down");
 
   function openNewsDetail(item: MarketNewsItem) {
     router.push({
@@ -112,7 +117,7 @@ export default function MarketScreen() {
         publishedAt: item.publishedAt,
         sentiment: item.sentiment,
         sentimentScore: String(item.sentimentScore),
-        symbols: item.relatedSymbols.join(","),
+        symbols: (item.relatedSymbols ?? []).join(","),
         url: item.url,
       },
     });
@@ -187,14 +192,14 @@ export default function MarketScreen() {
               </View>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.trendingScroll}>
-              {data.trending.map((stock) => (
+              {trending.map((stock) => (
                 <TrendingCard key={stock.symbol} stock={stock} cs={cs} styles={styles} onPress={() => router.push(`/stock/${stock.symbol}`)} />
               ))}
             </ScrollView>
 
             <Text style={styles.sectionTitle}>Sentiment by Source</Text>
             <View style={styles.sourcesCard}>
-              {data.sources.map((src, idx) => (
+              {sources.map((src, idx) => (
                 <View key={src.source}>
                   <SourceRow source={src} styles={styles} />
                   {idx < data.sources.length - 1 && <View style={styles.sourceDivider} />}
@@ -356,7 +361,7 @@ function NewsCard({ item, styles, onPress }: { item: MarketNewsItem; styles: Sty
           </Text>
         </View>
         <View style={styles.newsSymbols}>
-          {item.relatedSymbols.map((s) => (
+          {(item.relatedSymbols ?? []).map((s) => (
             <View key={s} style={styles.newsSymbolChip}>
               <Text style={styles.newsSymbolText}>${s}</Text>
             </View>

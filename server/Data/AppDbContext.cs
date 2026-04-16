@@ -58,6 +58,10 @@ namespace Server.Data
                 .Property(a => a.ReferencePrice)
                 .HasColumnType("decimal(18,2)");
 
+            modelBuilder.Entity<AlertEvent>()
+                .Property(ae => ae.TriggerValue)
+                .HasColumnType("decimal(18,2)");
+
             // Ensure Symbol is unique in the Stocks table
             modelBuilder.Entity<Stock>()
                 .HasIndex(s => s.Symbol)

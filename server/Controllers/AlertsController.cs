@@ -246,7 +246,21 @@ public class AlertsController : ControllerBase
                 .Where(s => s.Symbol == normalizedSymbol)
                 .Select(s => (int?)s.StockId)
                 .FirstOrDefaultAsync();
-            return fromSymbol;
+
+            if (fromSymbol is not null)
+            {
+                return fromSymbol;
+            }
+
+            var stock = new Stock
+            {
+                Symbol = normalizedSymbol,
+                CompanyName = normalizedSymbol,
+                Sector = string.Empty
+            };
+            _context.Stocks.Add(stock);
+            await _context.SaveChangesAsync();
+            return stock.StockId;
         }
 
         return null;

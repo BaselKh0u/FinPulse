@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert as AlertDialog,
@@ -11,11 +11,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { LineChart } from "react-native-chart-kit";
 import * as Haptics from "expo-haptics";
 import { StockDetails, StockNewsItem } from "@/models/Stock";
-import { getStockDetails, getStocks, addStock, removeStock } from "@/services/stock.service";
+import { getStockDetails, getStocks, addStock, removeStock, getStockHistory } from "@/services/stock.service";
 import { getAlerts, deleteAlert } from "@/services/alert.service";
 import { Colors, Fonts } from "@/theme";
 import { useTheme } from "@/stores/theme.store";
@@ -58,6 +58,7 @@ export default function StockDetailScreen() {
   const [inWatchlist, setInWatchlist] = useState(false);
   const [hasAlert, setHasAlert] = useState(false);
   const [alertId, setAlertId] = useState<string | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -69,6 +70,7 @@ export default function StockDetailScreen() {
           getAlerts(),
         ]);
         setDetails(data);
+        setChartData(data.chartData ?? []);
         setInWatchlist(watchlist.some((s) => s.symbol.toUpperCase() === (symbol ?? "").toUpperCase()));
         const matchingAlert = alerts.find((a) => a.symbol.toUpperCase() === (symbol ?? "").toUpperCase());
         setHasAlert(!!matchingAlert);
@@ -80,6 +82,36 @@ export default function StockDetailScreen() {
       }
     })();
   }, [symbol]);
+
+  useEffect(() => {
+    if (!details?.symbol) return;
+    (async () => {
+      try {
+        setChartLoading(true);
+        const next = await getStockHistory(details.symbol, selectedRange);
+        setChartData(next.length > 0 ? next : []);
+      } catch {
+        setChartData([]);
+      } finally {
+        setChartLoading(false);
+      }
+    })();
+  }, [details?.symbol, selectedRange]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!symbol) return;
+      getAlerts()
+        .then((alerts) => {
+          const matchingAlert = alerts.find((a) => a.symbol.toUpperCase() === symbol.toUpperCase());
+          setHasAlert(!!matchingAlert);
+          setAlertId(matchingAlert?.id ?? null);
+        })
+        .catch(() => {
+          // keep last known alert state
+        });
+    }, [symbol]),
+  );
 
   async function toggleWatchlist() {
     if (!details) return;
@@ -257,11 +289,12 @@ export default function StockDetailScreen() {
         </View>
 
         <View style={styles.chartCard}>
-          {details.chartData.length >= 2 ? (
+          {chartData.length >= 2 ? (
             <LineChart
+              key={`${selectedRange}-${chartData.length}`}
               data={{
                 labels: [],
-                datasets: [{ data: details.chartData, color: () => priceColor, strokeWidth: 2.5 }],
+                datasets: [{ data: chartData, color: () => priceColor, strokeWidth: 2.5 }],
               }}
               width={CHART_WIDTH}
               height={180}
@@ -285,7 +318,9 @@ export default function StockDetailScreen() {
             />
           ) : (
             <View style={{ height: 180, alignItems: "center", justifyContent: "center" }}>
-              <Text style={{ color: Colors.textTertiary, fontFamily: Fonts.medium }}>No chart data</Text>
+              <Text style={{ color: Colors.textTertiary, fontFamily: Fonts.medium }}>
+                {chartLoading ? "Loading chart..." : "No chart data for this range"}
+              </Text>
             </View>
           )}
           <View style={styles.rangeRow}>

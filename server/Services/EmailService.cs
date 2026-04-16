@@ -8,6 +8,7 @@ namespace Server.Services
         private readonly string _apiKey;
         private readonly string _fromEmail;
         private readonly string _fromName;
+        private readonly string _publicBaseUrl;
 
         public EmailService(IConfiguration configuration)
         {
@@ -15,6 +16,7 @@ namespace Server.Services
             _apiKey = section["ApiKey"]!;
             _fromEmail = section["FromEmail"]!;
             _fromName = section["FromName"]!;
+            _publicBaseUrl = (configuration["App:PublicBaseUrl"] ?? "http://localhost:5179").Trim().TrimEnd('/');
         }
 
         public async Task SendVerificationEmail(string toEmail, string token)
@@ -28,7 +30,7 @@ namespace Server.Services
                 var to = new EmailAddress(toEmail);
                 var subject = "Verify your FinPulse email";
 
-                var verificationLink = $"https://localhost:7173/api/Auth/verify-email?token={token}";
+                var verificationLink = $"{_publicBaseUrl}/api/Auth/verify-email?token={Uri.EscapeDataString(token)}";
 
                 var htmlContent = $"""
                     <!DOCTYPE html>
