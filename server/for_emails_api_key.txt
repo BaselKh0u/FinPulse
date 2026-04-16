@@ -1,5 +1,0 @@
-currently speaking the way to retrieve the key for the api emails is not able to be saved thus it is instead summoned using terminal with following line:
-cd server (if needed as you need to make sure the terminal is on server)
-dotnet user-secrets init
-dotnet user-secrets set "SendGrid:ApiKey" "<YOUR_SENDGRID_API_KEY_HERE>"
-after you do not get any errors copy the  string between the quotation marks and place it in the secretkey place for jwtsettings in appsettings and you're golden
