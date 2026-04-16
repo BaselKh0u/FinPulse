@@ -1,8 +1,10 @@
 import { getAccessToken } from "@/stores/auth.storage";
 
-const BASE_URL = "http://localhost:5000";
+const BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || "http://localhost:5179";
 
-export const USE_MOCK = true;
+/** Set EXPO_PUBLIC_USE_MOCK=true in .env for offline mock data. */
+export const USE_MOCK = process.env.EXPO_PUBLIC_USE_MOCK === "true";
 
 async function parseErrorMessage(response: Response): Promise<string> {
   const fallback = `Something went wrong (${response.status})`;

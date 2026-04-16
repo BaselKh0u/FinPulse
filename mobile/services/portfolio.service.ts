@@ -14,5 +14,5 @@ export async function getPortfolioSummary(): Promise<PortfolioSummary> {
       todayChangePercent: 1.81,
     };
   }
-  return apiRequest<PortfolioSummary>("/portfolio/summary");
+  return apiRequest<PortfolioSummary>("/api/Portfolio/summary");
 }

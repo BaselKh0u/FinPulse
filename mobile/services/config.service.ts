@@ -13,7 +13,7 @@ export type DataIngestionConfig = {
 
 export async function getDataIngestionConfig(): Promise<DataIngestionConfig | null> {
   try {
-    return await apiRequest<DataIngestionConfig>("/config/data-ingestion");
+    return await apiRequest<DataIngestionConfig>("/api/config/data-ingestion");
   } catch {
     return null;
   }

@@ -30,12 +30,12 @@ let mockPrefs: UserPreferences = {
 
 export async function getUserProfile(): Promise<User> {
   if (USE_MOCK) return { ...mockUser };
-  return apiRequest<User>("/user/profile");
+  return apiRequest<User>("/api/User/profile");
 }
 
 export async function getPreferences(): Promise<UserPreferences> {
   if (USE_MOCK) return { ...mockPrefs };
-  return apiRequest<UserPreferences>("/user/preferences");
+  return apiRequest<UserPreferences>("/api/User/preferences");
 }
 
 export async function updatePreferences(patch: Partial<UserPreferences>): Promise<UserPreferences> {
@@ -43,7 +43,7 @@ export async function updatePreferences(patch: Partial<UserPreferences>): Promis
     mockPrefs = { ...mockPrefs, ...patch };
     return { ...mockPrefs };
   }
-  return apiRequest<UserPreferences>("/user/preferences", {
+  return apiRequest<UserPreferences>("/api/User/preferences", {
     method: "PATCH",
     body: JSON.stringify(patch),
   });
@@ -54,7 +54,7 @@ export async function updateProfile(patch: Partial<Pick<User, "firstName" | "las
     Object.assign(mockUser, patch);
     return { ...mockUser };
   }
-  return apiRequest<User>("/user/profile", {
+  return apiRequest<User>("/api/User/profile", {
     method: "PATCH",
     body: JSON.stringify(patch),
   });

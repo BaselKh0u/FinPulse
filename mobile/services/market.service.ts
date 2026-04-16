@@ -131,10 +131,10 @@ const mockMarketData: MarketData = {
 
 export async function getMarketData(): Promise<MarketData> {
   if (USE_MOCK) return JSON.parse(JSON.stringify(mockMarketData));
-  return apiRequest<MarketData>("/market/overview");
+  return apiRequest<MarketData>("/api/Market/overview");
 }
 
 export async function getMarketNews(page = 1): Promise<MarketNewsItem[]> {
   if (USE_MOCK) return JSON.parse(JSON.stringify(mockMarketData.news));
-  return apiRequest<MarketNewsItem[]>(`/market/news?page=${page}`);
+  return apiRequest<MarketNewsItem[]>(`/api/Market/news?page=${page}`);
 }
