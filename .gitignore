@@ -19,6 +19,14 @@ yarn-error.log*
 # macOS
 .DS_Store
 
-# .NET
+# Visual Studio / .NET (server)
+.vs/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.userosscache
+*.sln.docstates
 bin/
 obj/
+server/appsettings.json
+server/local-api-keys.txt
