@@ -49,10 +49,18 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendDev", policy =>
     {
-        policy
-            .WithOrigins("http://localhost:8081", "http://127.0.0.1:8081")
-            .AllowAnyHeader()
-            .AllowAnyMethod();
+        // Development: allow Expo Go / physical devices on LAN (any Origin + preflight).
+        if (builder.Environment.IsDevelopment())
+        {
+            policy.SetIsOriginAllowed(_ => true).AllowAnyHeader().AllowAnyMethod();
+        }
+        else
+        {
+            policy
+                .WithOrigins("http://localhost:8081", "http://127.0.0.1:8081")
+                .AllowAnyHeader()
+                .AllowAnyMethod();
+        }
     });
 });
 
