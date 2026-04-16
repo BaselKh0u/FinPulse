@@ -168,7 +168,7 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
-      await login({ email: trimmedEmail, password });
+      await login({ email: trimmedEmail, password, stayLoggedIn });
       router.replace("/(tabs)");
     } catch (err) {
       Alert.alert("Login failed", loginErrorMessage(err));

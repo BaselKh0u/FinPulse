@@ -199,6 +199,60 @@ public class AlertsController : ControllerBase
         return Ok(new { message = "Alert event marked as read." });
     }
 
+    // Debug helper: create an AlertEvent immediately so you can verify alert UI/notifications pipeline quickly.
+    [HttpPost("debug/fire-test")]
+    public async Task<IActionResult> FireTestAlert([FromBody] FireTestAlertRequest request)
+    {
+        if (request.UserId <= 0)
+        {
+            return BadRequest(new { message = "UserId must be positive." });
+        }
+
+        Alert? alert = null;
+        if (request.AlertId is > 0)
+        {
+            alert = await _context.Alerts
+                .FirstOrDefaultAsync(a => a.AlertId == request.AlertId.Value && a.UserId == request.UserId);
+        }
+
+        alert ??= await _context.Alerts
+            .Where(a => a.UserId == request.UserId)
+            .OrderByDescending(a => a.CreatedAt)
+            .FirstOrDefaultAsync();
+
+        if (alert is null)
+        {
+            return BadRequest(new { message = "No alert found for this user. Create an alert first." });
+        }
+
+        var evt = new AlertEvent
+        {
+            AlertId = alert.AlertId,
+            UserId = alert.UserId,
+            StockId = alert.StockId,
+            ConditionType = alert.ConditionType,
+            TriggerValue = request.TriggerValue ?? alert.TargetPrice ?? alert.PercentageThreshold,
+            Details = string.IsNullOrWhiteSpace(request.Details)
+                ? $"Manual test trigger for {alert.ConditionType} alert on stockId {alert.StockId}."
+                : request.Details.Trim(),
+            CreatedAt = DateTime.UtcNow,
+            IsRead = false
+        };
+
+        _context.AlertEvents.Add(evt);
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = "Test alert event created.",
+            alertEventId = evt.AlertEventId,
+            alertId = evt.AlertId,
+            userId = evt.UserId,
+            stockId = evt.StockId,
+            createdAt = evt.CreatedAt
+        });
+    }
+
     private static string? ValidateRequest(AlertUpsertRequest request)
     {
         if (request.UserId <= 0)
@@ -311,5 +365,13 @@ public class AlertsController : ControllerBase
     public class ToggleAlertRequest
     {
         public bool IsActive { get; set; }
+    }
+
+    public class FireTestAlertRequest
+    {
+        public int UserId { get; set; }
+        public int? AlertId { get; set; }
+        public decimal? TriggerValue { get; set; }
+        public string? Details { get; set; }
     }
 }

@@ -31,6 +31,7 @@ export default function HomeScreen() {
 
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [mood, setMood] = useState<MarketMood | null>(null);
+  const [marketRetrievedAt, setMarketRetrievedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [portfolioSummary, setPortfolioSummary] = useState<{
@@ -59,6 +60,7 @@ export default function HomeScreen() {
     ]);
     setStocks(stocksData);
     setMood(marketData.mood);
+    setMarketRetrievedAt(marketData.retrievedAt ?? marketData.mood?.updatedAt ?? null);
     setPortfolioSummary(summary);
     setIngestionConfig(ingestCfg);
   }, []);
@@ -190,6 +192,11 @@ export default function HomeScreen() {
               <View>
                 <Text style={styles.pulseLabel}>Market Pulse</Text>
                 <Text style={styles.pulseSub}>{mood.label} · Score {(mood.score * 100).toFixed(0)}</Text>
+                {marketRetrievedAt && (
+                  <Text style={styles.pulseMeta}>
+                    Last retrieved {new Date(marketRetrievedAt).toLocaleString()}
+                  </Text>
+                )}
               </View>
             </View>
             <View style={styles.pulseRight}>
@@ -403,6 +410,7 @@ const createStyles = () => StyleSheet.create({
   },
   pulseLabel: { fontSize: 15, color: Colors.textPrimary, fontFamily: Fonts.bold },
   pulseSub: { fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.medium, marginTop: 2 },
+  pulseMeta: { fontSize: 11, color: Colors.textTertiary, fontFamily: Fonts.medium, marginTop: 3 },
   pulseRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   pulseBar: { height: 6, backgroundColor: Colors.iconBackground, borderRadius: 3, overflow: "hidden" },
   pulseBarFill: { height: 6, borderRadius: 3 },

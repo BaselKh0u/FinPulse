@@ -5,6 +5,7 @@ namespace Server.Config
         public const string SectionName = "AlphaVantage";
 
         public string ApiKey { get; set; } = string.Empty;
+        public List<string> ApiKeys { get; set; } = [];
         public string BaseUrl { get; set; } = "https://www.alphavantage.co";
         public List<string> Symbols { get; set; } = [];
         public int PollingIntervalMinutes { get; set; } = 1440;

@@ -149,6 +149,11 @@ export async function changePassword(oldPassword: string, newPassword: string): 
   });
 }
 
+export async function resendVerificationEmail(): Promise<void> {
+  if (USE_MOCK) return;
+  await apiRequest("/auth/resend-verification", { method: "POST" });
+}
+
 export async function deleteAccount(): Promise<void> {
   if (USE_MOCK) return;
   await apiRequest("/auth/delete-account", { method: "DELETE" });

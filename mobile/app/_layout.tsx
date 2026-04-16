@@ -6,6 +6,8 @@ import {
   registerForPushNotifications,
   addNotificationResponseListener,
 } from "@/services/notification.service";
+import { getPreferences } from "@/services/user.service";
+import { getAccessToken, subscribeSessionChange } from "@/stores/auth.storage";
 import { applyTheme } from "@/theme/colors";
 import { ThemeContext } from "@/stores/theme.store";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -50,6 +52,37 @@ export default function RootLayout() {
       notificationListener.current?.remove();
     };
   }, [router]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const syncThemeFromUser = async () => {
+      const token = await getAccessToken();
+      if (!token) {
+        if (!alive) return;
+        setIsDark(false);
+        applyTheme(false);
+        return;
+      }
+      try {
+        const prefs = await getPreferences();
+        if (!alive) return;
+        setIsDark(!!prefs.darkMode);
+        applyTheme(!!prefs.darkMode);
+      } catch {
+        // unauthenticated startup / network issue: keep current theme
+      }
+    };
+
+    void syncThemeFromUser();
+    const unsub = subscribeSessionChange(() => {
+      void syncThemeFromUser();
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, []);
 
   if (!fontsLoaded) return null;
 

@@ -53,6 +53,7 @@ export interface MarketData {
   sources: SourceSentiment[];
   movers: SentimentMover[];
   news: MarketNewsItem[];
+  retrievedAt?: string;
 }
 
 const mockMarketData: MarketData = {

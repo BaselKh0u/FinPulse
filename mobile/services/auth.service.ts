@@ -26,8 +26,11 @@ export interface AuthResponse {
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-async function persistSessionAfterPasswordLogin(res: AuthResponse): Promise<void> {
-  await saveSession(res.token, String(res.userId));
+async function persistSessionAfterPasswordLogin(
+  res: AuthResponse,
+  stayLoggedIn = true
+): Promise<void> {
+  await saveSession(res.token, String(res.userId), stayLoggedIn);
   if (await isBiometricEnabled()) {
     await stashSessionForBiometricRelogin(res.token, String(res.userId));
   } else {
@@ -41,7 +44,7 @@ export async function login(data: LoginRequest): Promise<AuthResponse> {
       throw new Error("Invalid email or password.");
     }
     const res = { token: "mock-token-123", userId: "mock-user-1" };
-    await persistSessionAfterPasswordLogin(res);
+    await persistSessionAfterPasswordLogin(res, data.stayLoggedIn ?? true);
     return res;
   }
 
@@ -53,7 +56,7 @@ export async function login(data: LoginRequest): Promise<AuthResponse> {
     }),
   });
   const res: AuthResponse = { token: dto.token, userId: String(dto.userId) };
-  await persistSessionAfterPasswordLogin(res);
+  await persistSessionAfterPasswordLogin(res, data.stayLoggedIn ?? true);
   return res;
 }
 
@@ -76,7 +79,7 @@ export async function register(data: RegisterRequest): Promise<AuthResponse> {
   });
 
   const response: AuthResponse = { token: dto.token, userId: String(dto.userId) };
-  await persistSessionAfterPasswordLogin(response);
+  await persistSessionAfterPasswordLogin(response, true);
   return response;
 }
 

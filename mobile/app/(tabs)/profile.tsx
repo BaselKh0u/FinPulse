@@ -30,6 +30,7 @@ import {
   updateAvatar,
   registerDeviceToken,
   changePassword,
+  resendVerificationEmail,
   deleteAccount,
   logout,
 } from "@/services/user.service";
@@ -90,6 +91,7 @@ export default function ProfileScreen() {
   const [passwordSaving, setPasswordSaving] = useState(false);
 
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [avatarSaving, setAvatarSaving] = useState(false);
   const [currencyModal, setCurrencyModal] = useState(false);
   const [refreshModal, setRefreshModal] = useState(false);
   const [biometricBusy, setBiometricBusy] = useState(false);
@@ -122,6 +124,26 @@ export default function ProfileScreen() {
     }, [load]),
   );
 
+  async function applyAvatar(nextUri: string) {
+    const previous = avatarUri;
+    setAvatarSaving(true);
+    setAvatarUri(nextUri);
+    setGlobalAvatar(nextUri);
+    try {
+      const savedUri = await updateAvatar(nextUri);
+      setAvatarUri(savedUri || nextUri);
+      setGlobalAvatar(savedUri || nextUri);
+      setUser((prev) => (prev ? { ...prev, avatarUrl: savedUri || nextUri } : prev));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      setAvatarUri(previous ?? null);
+      setGlobalAvatar(previous ?? null);
+      Alert.alert("Avatar update failed", e instanceof Error ? e.message : "Please try again.");
+    } finally {
+      setAvatarSaving(false);
+    }
+  }
+
   function pickAvatar() {
     Alert.alert("Change Profile Photo", "Choose a source", [
       {
@@ -138,11 +160,7 @@ export default function ProfileScreen() {
             quality: 0.8,
           });
           if (!result.canceled && result.assets[0]) {
-            const nextUri = result.assets[0].uri;
-            setAvatarUri(nextUri);
-            setGlobalAvatar(nextUri);
-            await updateAvatar(nextUri);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await applyAvatar(result.assets[0].uri);
           }
         },
       },
@@ -161,11 +179,7 @@ export default function ProfileScreen() {
             quality: 0.8,
           });
           if (!result.canceled && result.assets[0]) {
-            const nextUri = result.assets[0].uri;
-            setAvatarUri(nextUri);
-            setGlobalAvatar(nextUri);
-            await updateAvatar(nextUri);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await applyAvatar(result.assets[0].uri);
           }
         },
       },
@@ -353,7 +367,7 @@ export default function ProfileScreen() {
 
         {/* User Card */}
         <View style={styles.userCard}>
-          <Pressable onPress={pickAvatar} style={styles.avatarWrap}>
+          <Pressable onPress={avatarSaving ? undefined : pickAvatar} style={[styles.avatarWrap, avatarSaving && { opacity: 0.7 }]}>
             {avatarUri ? (
               <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
             ) : (
@@ -362,7 +376,7 @@ export default function ProfileScreen() {
               </View>
             )}
             <View style={styles.cameraIcon}>
-              <Ionicons name="camera" size={14} color={Colors.white} />
+              <Ionicons name={avatarSaving ? "hourglass-outline" : "camera"} size={14} color={Colors.white} />
             </View>
           </Pressable>
           <View style={styles.userInfo}>
@@ -396,7 +410,24 @@ export default function ProfileScreen() {
               if (user.isVerified) {
                 Alert.alert("Verified", "Your account has been verified by FinPulse.");
               } else {
-                Alert.alert("Verification Pending", "Complete your profile and verify your email to get the verified badge. This is handled by the backend once your identity is confirmed.");
+                Alert.alert(
+                  "Verification Pending",
+                  "Your email is not verified yet. Do you want us to resend the verification email now?",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Resend Email",
+                      onPress: async () => {
+                        try {
+                          await resendVerificationEmail();
+                          Alert.alert("Sent", "Verification email sent. Check inbox/spam.");
+                        } catch (e) {
+                          Alert.alert("Failed", e instanceof Error ? e.message : "Could not resend verification email.");
+                        }
+                      },
+                    },
+                  ]
+                );
               }
             }}
             trailing={

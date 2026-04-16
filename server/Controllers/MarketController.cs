@@ -31,6 +31,7 @@ public class MarketController : ControllerBase
         var sources = await BuildSourcesAsync();
         var news = await BuildNewsAsync();
         var movers = await BuildMoversAsync();
+        var retrievedAt = await GetRetrievedAtAsync();
 
         return Ok(new
         {
@@ -38,7 +39,8 @@ public class MarketController : ControllerBase
             trending,
             sources,
             news,
-            movers
+            movers,
+            retrievedAt
         });
     }
 
@@ -377,6 +379,30 @@ public class MarketController : ControllerBase
                 url = "#"
             };
         });
+    }
+
+    private async Task<DateTime> GetRetrievedAtAsync()
+    {
+        var latestPriceAt = await _context.PriceData
+            .OrderByDescending(p => p.RecordedAt)
+            .Select(p => (DateTime?)p.RecordedAt)
+            .FirstOrDefaultAsync();
+
+        var latestSentimentAt = await _context.SentimentAnalyses
+            .OrderByDescending(s => s.AnalyzedAt)
+            .Select(s => (DateTime?)s.AnalyzedAt)
+            .FirstOrDefaultAsync();
+
+        return new[]
+            {
+                latestPriceAt ?? DateTime.MinValue,
+                latestSentimentAt ?? DateTime.MinValue,
+            }
+            .Max() switch
+        {
+            var dt when dt == DateTime.MinValue => DateTime.UtcNow,
+            var dt => dt
+        };
     }
 
     private async Task<List<Stock>> EnsureStocksExistAsync(IEnumerable<string> symbols)

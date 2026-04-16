@@ -12,20 +12,48 @@ const BIOM_REL_TOKEN = "finpulse_bio_rel_token";
 const BIOM_REL_USER = "finpulse_bio_rel_user";
 const WEB_BIOM_TOKEN = "finpulse_bio_rel_t_web";
 const WEB_BIOM_USER = "finpulse_bio_rel_u_web";
+let volatileToken: string | null = null;
+let volatileUserId: string | null = null;
+const listeners = new Set<() => void>();
 
-export async function saveSession(token: string, userId: string): Promise<void> {
+function notifySessionListeners() {
+  listeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // listener errors should never block auth flow
+    }
+  });
+}
+
+export function subscribeSessionChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export async function saveSession(token: string, userId: string, persist = true): Promise<void> {
+  volatileToken = token;
+  volatileUserId = userId;
+  if (!persist) {
+    notifySessionListeners();
+    return;
+  }
   if (Platform.OS === "web") {
     await AsyncStorage.multiSet([
       [WEB_TOKEN, token],
       [WEB_USER, userId],
     ]);
+    notifySessionListeners();
     return;
   }
   await SecureStore.setItemAsync(TOKEN_KEY, token);
   await SecureStore.setItemAsync(USER_ID_KEY, userId);
+  notifySessionListeners();
 }
 
 export async function clearSession(): Promise<void> {
+  volatileToken = null;
+  volatileUserId = null;
   try {
     if (Platform.OS === "web") {
       await AsyncStorage.multiRemove([WEB_TOKEN, WEB_USER]);
@@ -35,10 +63,15 @@ export async function clearSession(): Promise<void> {
     await SecureStore.deleteItemAsync(USER_ID_KEY);
   } catch {
     // Key may not exist
+  } finally {
+    notifySessionListeners();
   }
 }
 
 export async function getAccessToken(): Promise<string | null> {
+  if (volatileToken) {
+    return volatileToken;
+  }
   if (Platform.OS === "web") {
     return AsyncStorage.getItem(WEB_TOKEN);
   }
@@ -46,6 +79,9 @@ export async function getAccessToken(): Promise<string | null> {
 }
 
 export async function getStoredUserId(): Promise<string | null> {
+  if (volatileUserId) {
+    return volatileUserId;
+  }
   if (Platform.OS === "web") {
     return AsyncStorage.getItem(WEB_USER);
   }

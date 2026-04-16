@@ -55,6 +55,9 @@ export default function StockDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [selectedRange, setSelectedRange] = useState<TimeRange>("1M");
   const [chartData, setChartData] = useState<number[]>([]);
+  const [chartFrom, setChartFrom] = useState<string | null>(null);
+  const [chartTo, setChartTo] = useState<string | null>(null);
+  const [chartRetrievedAt, setChartRetrievedAt] = useState<string | null>(null);
   const [inWatchlist, setInWatchlist] = useState(false);
   const [hasAlert, setHasAlert] = useState(false);
   const [alertId, setAlertId] = useState<string | null>(null);
@@ -89,7 +92,10 @@ export default function StockDetailScreen() {
       try {
         setChartLoading(true);
         const next = await getStockHistory(details.symbol, selectedRange);
-        setChartData(next.length > 0 ? next : []);
+        setChartData(next.values.length > 0 ? next.values : []);
+        setChartFrom(next.from ?? null);
+        setChartTo(next.to ?? null);
+        setChartRetrievedAt(next.retrievedAt ?? null);
       } catch {
         setChartData([]);
       } finally {
@@ -176,6 +182,18 @@ export default function StockDetailScreen() {
       neutWidth: `${(neutral / total) * 100}%` as const,
     };
   }, [details]);
+
+  const rangeSpanText = useMemo(() => {
+    if (!chartFrom || !chartTo) return `${selectedRange}`;
+    const from = new Date(chartFrom);
+    const to = new Date(chartTo);
+    return `${selectedRange} • ${from.toLocaleDateString()} - ${to.toLocaleDateString()}`;
+  }, [chartFrom, chartTo, selectedRange]);
+
+  const retrievedText = useMemo(() => {
+    if (!chartRetrievedAt) return null;
+    return `Last retrieved ${timeAgo(chartRetrievedAt)}`;
+  }, [chartRetrievedAt]);
 
   if (loading) {
     return (
@@ -334,6 +352,8 @@ export default function StockDetailScreen() {
               </Pressable>
             ))}
           </View>
+          <Text style={styles.rangeMeta}>{rangeSpanText}</Text>
+          {retrievedText && <Text style={styles.rangeMetaMuted}>{retrievedText}</Text>}
         </View>
 
         <View style={styles.actionsRow}>
@@ -494,6 +514,8 @@ const createStyles = () => StyleSheet.create({
   rangeBtnActive: { backgroundColor: Colors.card, shadowColor: Colors.shadow, shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
   rangeText: { fontSize: 13, color: Colors.textTertiary, fontFamily: Fonts.semiBold },
   rangeTextActive: { color: Colors.textPrimary, fontFamily: Fonts.bold },
+  rangeMeta: { marginTop: 10, fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.medium },
+  rangeMetaMuted: { marginTop: 2, fontSize: 11, color: Colors.textTertiary, fontFamily: Fonts.medium },
 
   actionsRow: { flexDirection: "row", gap: 12, marginTop: 20 },
   actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, borderRadius: 14 },

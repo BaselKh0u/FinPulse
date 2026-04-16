@@ -19,14 +19,17 @@ public class StockController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly AlphaVantageOptions _alphaOptions;
     private readonly string _apiKey;
+    private readonly List<string> _apiKeys;
     private readonly ILogger<StockController> _logger;
+    private readonly IServiceProvider _serviceProvider;
 
     public StockController(
         AppDbContext context,
         IHttpClientFactory httpClientFactory,
         IOptions<AlphaVantageOptions> options,
         IConfiguration configuration,
-        ILogger<StockController> logger)
+        ILogger<StockController> logger,
+        IServiceProvider serviceProvider)
     {
         _context = context;
         _httpClientFactory = httpClientFactory;
@@ -35,7 +38,9 @@ public class StockController : ControllerBase
             _alphaOptions.ApiKey,
             configuration["AlphaVantage:ApiKey"],
             Environment.GetEnvironmentVariable("AlphaVantage__ApiKey"));
+        _apiKeys = ResolveApiKeys(configuration, _alphaOptions, _apiKey);
         _logger = logger;
+        _serviceProvider = serviceProvider;
     }
 
     private static string FirstNonEmpty(params string?[] values)
@@ -49,6 +54,39 @@ public class StockController : ControllerBase
         }
 
         return string.Empty;
+    }
+
+    private static List<string> ResolveApiKeys(IConfiguration configuration, AlphaVantageOptions options, string fallbackKey)
+    {
+        var keys = new List<string>();
+        keys.AddRange(options.ApiKeys ?? []);
+        keys.AddRange(configuration.GetSection("AlphaVantage:ApiKeys").Get<string[]>() ?? []);
+
+        var envCsv = Environment.GetEnvironmentVariable("AlphaVantage__ApiKeys");
+        if (!string.IsNullOrWhiteSpace(envCsv))
+        {
+            keys.AddRange(envCsv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+        }
+        keys.Add(fallbackKey);
+
+        return keys
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => k.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private string? GetAvailableApiKey()
+    {
+        foreach (var key in _apiKeys)
+        {
+            if (!AlphaVantageRateLimitGuard.IsBlocked(key, out _, out _))
+            {
+                return key;
+            }
+        }
+
+        return null;
     }
 
     private int GetUserId() => int.Parse(User.FindFirst("userId")!.Value);
@@ -197,22 +235,29 @@ public class StockController : ControllerBase
                 stockId = s.StockId,
                 symbol = s.Symbol,
                 companyName = s.CompanyName,
-                sector = s.Sector
+                sector = s.Sector,
+                price = _context.PriceData
+                    .Where(p => p.StockId == s.StockId)
+                    .OrderByDescending(p => p.RecordedAt)
+                    .Select(p => (decimal?)p.Price)
+                    .FirstOrDefault() ?? 0m
             })
             .ToListAsync()).Cast<object>().ToList();
 
-        if (results.Count == 0 && !string.IsNullOrWhiteSpace(_apiKey))
+        if (results.Count == 0 && _apiKeys.Count > 0)
         {
-            if (AlphaVantageRateLimitGuard.IsBlocked(out var blockedUntilUtc, out var reason))
+            var key = GetAvailableApiKey();
+            if (key is null)
             {
+                AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntilUtc, out var reason);
                 _logger.LogWarning(
-                    "Skipping Alpha Vantage search due to cooldown until {BlockedUntil}. Reason: {Reason}",
+                    "Skipping Alpha Vantage search, all keys are cooling down. First unblock at {BlockedUntil}. Reason: {Reason}",
                     blockedUntilUtc, reason);
             }
             else
             {
                 _logger.LogInformation("No DB results for {Query}, trying Alpha Vantage", q);
-                results = await SearchAlphaVantageAsync(q);
+                results = await SearchAlphaVantageAsync(q, key);
             }
         }
 
@@ -243,7 +288,22 @@ public class StockController : ControllerBase
             _logger.LogInformation("Testing Alpha Vantage with symbol: {Symbol}", symbol);
             
             var client = _httpClientFactory.CreateClient();
-            var url = $"{_alphaOptions.BaseUrl}/query?function=SYMBOL_SEARCH&keywords={Uri.EscapeDataString(symbol)}&apikey={_apiKey}";
+            var testKey = GetAvailableApiKey();
+            if (string.IsNullOrWhiteSpace(testKey))
+            {
+                return Ok(new
+                {
+                    statusCode = "NoKeyAvailable",
+                    isSuccess = false,
+                    apiKeyConfigured = _apiKeys.Count > 0,
+                    activeKeyCount = _apiKeys.Count,
+                    cooldownActive = AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntil, out var why),
+                    blockedUntilUtc = blockedUntil,
+                    cooldownReason = why,
+                    response = "No Alpha Vantage key is currently available (all keys cooling down or unset)."
+                });
+            }
+            var url = $"{_alphaOptions.BaseUrl}/query?function=SYMBOL_SEARCH&keywords={Uri.EscapeDataString(symbol)}&apikey={testKey}";
             
             _logger.LogInformation("Request URL: {Url}", url);
             
@@ -251,13 +311,14 @@ public class StockController : ControllerBase
             var content = await response.Content.ReadAsStringAsync();
             
             _logger.LogInformation("Response: {Content}", content);
-            var cooldownActive = AlphaVantageRateLimitGuard.IsBlocked(out var blockedUntilUtc, out var reason);
+            var cooldownActive = AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntilUtc, out var reason);
             
             return Ok(new
             {
                 statusCode = response.StatusCode,
                 isSuccess = response.IsSuccessStatusCode,
-                apiKeyConfigured = !string.IsNullOrWhiteSpace(_apiKey),
+                apiKeyConfigured = _apiKeys.Count > 0,
+                activeKeyCount = _apiKeys.Count,
                 cooldownActive,
                 blockedUntilUtc,
                 cooldownReason = reason,
@@ -271,12 +332,75 @@ public class StockController : ControllerBase
         }
     }
 
-    private async Task<List<object>> SearchAlphaVantageAsync(string query)
+    [HttpGet("debug/status")]
+    public async Task<IActionResult> DebugStatus()
+    {
+        var totalStocks = await _context.Stocks.CountAsync();
+        var stocksWithPrices = await _context.PriceData
+            .Select(p => p.StockId)
+            .Distinct()
+            .CountAsync();
+        var latestPriceAt = await _context.PriceData
+            .OrderByDescending(p => p.RecordedAt)
+            .Select(p => (DateTime?)p.RecordedAt)
+            .FirstOrDefaultAsync();
+        var latestSentimentAt = await _context.SentimentAnalyses
+            .OrderByDescending(s => s.AnalyzedAt)
+            .Select(s => (DateTime?)s.AnalyzedAt)
+            .FirstOrDefaultAsync();
+
+        var blockedKeys = _apiKeys
+            .Where(k => AlphaVantageRateLimitGuard.IsBlocked(k, out _, out _))
+            .Count();
+        var availableKeys = _apiKeys.Count - blockedKeys;
+
+        var cooldownActive = AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntilUtc, out var reason);
+
+        return Ok(new
+        {
+            totalStocks,
+            stocksWithPrices,
+            latestPriceAt,
+            latestSentimentAt,
+            activeKeyCount = _apiKeys.Count,
+            availableKeyCount = availableKeys,
+            blockedKeyCount = blockedKeys,
+            cooldownActive,
+            blockedUntilUtc,
+            cooldownReason = reason
+        });
+    }
+
+    [HttpPost("debug/ingest-now")]
+    public async Task<IActionResult> DebugIngestNow()
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var ingestionService = scope.ServiceProvider.GetRequiredService<IStockIngestionService>();
+        await ingestionService.IngestAsync(CancellationToken.None);
+
+        var latestPriceAt = await _context.PriceData
+            .OrderByDescending(p => p.RecordedAt)
+            .Select(p => (DateTime?)p.RecordedAt)
+            .FirstOrDefaultAsync();
+        var stocksWithPrices = await _context.PriceData
+            .Select(p => p.StockId)
+            .Distinct()
+            .CountAsync();
+
+        return Ok(new
+        {
+            message = "Ingestion run completed.",
+            latestPriceAt,
+            stocksWithPrices
+        });
+    }
+
+    private async Task<List<object>> SearchAlphaVantageAsync(string query, string apiKey)
     {
         try
         {
             var client = _httpClientFactory.CreateClient();
-            var url = $"{_alphaOptions.BaseUrl}/query?function=SYMBOL_SEARCH&keywords={Uri.EscapeDataString(query)}&apikey={_apiKey}";
+            var url = $"{_alphaOptions.BaseUrl}/query?function=SYMBOL_SEARCH&keywords={Uri.EscapeDataString(query)}&apikey={apiKey}";
             
             _logger.LogInformation("Searching Alpha Vantage for: {Query}", query);
             
@@ -306,13 +430,13 @@ public class StockController : ControllerBase
                 {
                     var noteText = note.GetString();
                     _logger.LogWarning("Alpha Vantage API limit note: {Note}", noteText);
-                    AlphaVantageRateLimitGuard.MarkIfLimited(noteText);
+                    AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, noteText);
                 }
                 if (document.RootElement.TryGetProperty("Information", out var info))
                 {
                     var infoText = info.GetString();
                     _logger.LogWarning("Alpha Vantage API information: {Info}", infoText);
-                    AlphaVantageRateLimitGuard.MarkIfLimited(infoText);
+                    AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, infoText);
                 }
                 
                 return new List<object>();
@@ -345,14 +469,19 @@ public class StockController : ControllerBase
                     await _context.SaveChangesAsync();
                 }
 
-                // Intentionally no live quote here: one SYMBOL_SEARCH call per query avoids burning the free-tier quota.
+                var latestPrice = await _context.PriceData
+                    .Where(p => p.StockId == stock.StockId)
+                    .OrderByDescending(p => p.RecordedAt)
+                    .Select(p => (decimal?)p.Price)
+                    .FirstOrDefaultAsync();
 
                 results.Add(new
                 {
                     stockId = stock.StockId,
                     symbol = stock.Symbol,
                     companyName = stock.CompanyName,
-                    sector = stock.Sector
+                    sector = stock.Sector,
+                    price = latestPrice ?? 0m
                 });
             }
 
@@ -395,6 +524,7 @@ public class StockController : ControllerBase
             companyName = stock.CompanyName,
             sector = stock.Sector,
             latestPrice = latestPrice?.price ?? 0,
+            lastRetrievedAt = latestPrice?.recordedAt,
             priceHistory
         });
     }
@@ -434,10 +564,18 @@ public class StockController : ControllerBase
         var result = points.Select(p => new
         {
             label = p.RecordedAt.ToString(labelFormat),
-            value = p.Price
+            value = p.Price,
+            recordedAt = p.RecordedAt
         });
 
-        return Ok(result);
+        return Ok(new
+        {
+            range = range.ToUpperInvariant(),
+            from = points.FirstOrDefault()?.RecordedAt,
+            to = points.LastOrDefault()?.RecordedAt,
+            retrievedAt = points.LastOrDefault()?.RecordedAt ?? DateTime.UtcNow,
+            points = result
+        });
     }
 }
 

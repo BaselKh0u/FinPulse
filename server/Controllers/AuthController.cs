@@ -100,6 +100,31 @@ public class AuthController : ControllerBase
         return Ok(new { message = "If this email exists, a reset link has been sent." });
     }
 
+    // POST: api/Auth/resend-verification
+    [Authorize]
+    [HttpPost("resend-verification")]
+    public async Task<IActionResult> ResendVerificationEmail()
+    {
+        var userId = int.Parse(User.FindFirst("userId")!.Value);
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+        {
+            return Unauthorized(new { message = "User not found." });
+        }
+
+        if (user.IsVerified)
+        {
+            return Ok(new { message = "Your email is already verified." });
+        }
+
+        user.EmailVerificationToken = Guid.NewGuid().ToString();
+        user.EmailVerificationTokenExpiry = DateTime.UtcNow.AddHours(24);
+        await _context.SaveChangesAsync();
+
+        await _emailService.SendVerificationEmail(user.Email, user.EmailVerificationToken);
+        return Ok(new { message = "Verification email sent." });
+    }
+
     // POST: api/Auth/change-password
     [Authorize]
     [HttpPost("change-password")]

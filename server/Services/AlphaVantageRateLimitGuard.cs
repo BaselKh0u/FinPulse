@@ -3,36 +3,62 @@ namespace Server.Services;
 public static class AlphaVantageRateLimitGuard
 {
     private static readonly object Sync = new();
-    private static DateTimeOffset? _blockedUntilUtc;
-    private static string? _reason;
+    private static readonly Dictionary<string, (DateTimeOffset Until, string Reason)> Blocks = new(StringComparer.OrdinalIgnoreCase);
+    private const string GlobalKey = "__GLOBAL__";
 
-    public static bool IsBlocked(out DateTimeOffset? blockedUntilUtc, out string? reason)
+    private static string NormalizeKey(string? apiKey) =>
+        string.IsNullOrWhiteSpace(apiKey) ? GlobalKey : apiKey.Trim();
+
+    public static bool IsBlocked(string? apiKey, out DateTimeOffset? blockedUntilUtc, out string? reason)
     {
+        var key = NormalizeKey(apiKey);
         lock (Sync)
         {
-            if (_blockedUntilUtc is null)
+            if (!Blocks.TryGetValue(key, out var block))
             {
                 blockedUntilUtc = null;
                 reason = null;
                 return false;
             }
 
-            if (DateTimeOffset.UtcNow < _blockedUntilUtc.Value)
+            if (DateTimeOffset.UtcNow < block.Until)
             {
-                blockedUntilUtc = _blockedUntilUtc;
-                reason = _reason;
+                blockedUntilUtc = block.Until;
+                reason = block.Reason;
                 return true;
             }
 
-            _blockedUntilUtc = null;
-            _reason = null;
+            Blocks.Remove(key);
             blockedUntilUtc = null;
             reason = null;
             return false;
         }
     }
 
-    public static void MarkIfLimited(string? message)
+    public static bool IsAnyBlocked(out DateTimeOffset? blockedUntilUtc, out string? reason)
+    {
+        lock (Sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var active = Blocks
+                .Where(kvp => kvp.Value.Until > now)
+                .OrderBy(kvp => kvp.Value.Until)
+                .FirstOrDefault();
+
+            if (active.Key is null)
+            {
+                blockedUntilUtc = null;
+                reason = null;
+                return false;
+            }
+
+            blockedUntilUtc = active.Value.Until;
+            reason = active.Value.Reason;
+            return true;
+        }
+    }
+
+    public static void MarkIfLimited(string? apiKey, string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
@@ -47,10 +73,10 @@ public static class AlphaVantageRateLimitGuard
         }
 
         var nextUtcDay = DateTimeOffset.UtcNow.UtcDateTime.Date.AddDays(1);
+        var key = NormalizeKey(apiKey);
         lock (Sync)
         {
-            _blockedUntilUtc = new DateTimeOffset(nextUtcDay, TimeSpan.Zero);
-            _reason = text.Length > 220 ? text[..220] : text;
+            Blocks[key] = (new DateTimeOffset(nextUtcDay, TimeSpan.Zero), text.Length > 220 ? text[..220] : text);
         }
     }
 }

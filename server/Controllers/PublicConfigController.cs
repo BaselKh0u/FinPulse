@@ -16,14 +16,15 @@ public class PublicConfigController : ControllerBase
     public ActionResult<object> GetDataIngestion([FromServices] IOptions<AlphaVantageOptions> options)
     {
         var o = options.Value;
-        var cooldownActive = AlphaVantageRateLimitGuard.IsBlocked(out var blockedUntilUtc, out var reason);
+        var cooldownActive = AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntilUtc, out var reason);
+        var hasAnyKey = !string.IsNullOrWhiteSpace(o.ApiKey) || (o.ApiKeys?.Any(k => !string.IsNullOrWhiteSpace(k)) ?? false);
         return Ok(new
         {
             pollingIntervalMinutes = Math.Max(1, o.PollingIntervalMinutes),
             delayBetweenSymbolIngestionSeconds = Math.Clamp(o.DelayBetweenSymbolIngestionSeconds, 0, 3600),
             delayBetweenAlphaVantageCallsSeconds = Math.Clamp(o.DelayBetweenAlphaVantageCallsSeconds, 0, 600),
             startupDelaySeconds = Math.Clamp(o.StartupDelaySeconds, 0, 600),
-            hasAlphaVantageKey = !string.IsNullOrWhiteSpace(o.ApiKey),
+            hasAlphaVantageKey = hasAnyKey,
             alphaVantageCooldownActive = cooldownActive,
             alphaVantageBlockedUntilUtc = blockedUntilUtc,
             alphaVantageCooldownReason = reason

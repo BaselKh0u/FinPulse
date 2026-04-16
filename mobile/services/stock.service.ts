@@ -235,16 +235,38 @@ export async function getStockDetails(symbol: string): Promise<StockDetails> {
   };
 }
 
-export async function getStockHistory(symbol: string, range: string): Promise<number[]> {
+export type StockHistoryResult = {
+  values: number[];
+  from?: string;
+  to?: string;
+  retrievedAt?: string;
+};
+
+export async function getStockHistory(symbol: string, range: string): Promise<StockHistoryResult> {
   if (USE_MOCK) {
     const base = allAvailableStocks.find((s) => s.symbol.toUpperCase() === symbol.toUpperCase())?.price ?? 100;
-    return generateChart(base, 40);
+    return {
+      values: generateChart(base, 40),
+      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+      to: new Date().toISOString(),
+      retrievedAt: new Date().toISOString(),
+    };
   }
 
-  const points = await apiRequest<Array<{ value: number }>>(
+  const payload = await apiRequest<{
+    from?: string;
+    to?: string;
+    retrievedAt?: string;
+    points: Array<{ value: number; recordedAt?: string }>;
+  }>(
     `/stock/${symbol}/chart?range=${encodeURIComponent(range)}`
   );
-  return points
-    .map((p) => (typeof p.value === "number" ? p.value : Number(p.value)))
-    .filter((v) => Number.isFinite(v));
+  return {
+    values: (payload.points ?? [])
+      .map((p) => (typeof p.value === "number" ? p.value : Number(p.value)))
+      .filter((v) => Number.isFinite(v)),
+    from: payload.from,
+    to: payload.to,
+    retrievedAt: payload.retrievedAt,
+  };
 }

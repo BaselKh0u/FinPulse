@@ -136,6 +136,9 @@ export default function MarketScreen() {
               <View>
                 <Text style={styles.headerTitle}>Market Pulse</Text>
                 <Text style={styles.headerSub}>Sentiment & News Analysis</Text>
+                {data.retrievedAt && (
+                  <Text style={styles.headerMeta}>Last retrieved {timeAgo(data.retrievedAt)}</Text>
+                )}
               </View>
               <View style={styles.liveBadge}>
                 <View style={styles.liveDot} />
@@ -383,6 +386,7 @@ const createStyles = () => StyleSheet.create({
   },
   headerTitle: { fontSize: 30, color: Colors.textPrimary, fontFamily: Fonts.bold },
   headerSub: { fontSize: 14, color: Colors.textSecondary, fontFamily: Fonts.medium, marginTop: 2 },
+  headerMeta: { fontSize: 12, color: Colors.textTertiary, fontFamily: Fonts.medium, marginTop: 3 },
   liveBadge: {
     flexDirection: "row", alignItems: "center", gap: 6,
     backgroundColor: Colors.dangerLight, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20,
