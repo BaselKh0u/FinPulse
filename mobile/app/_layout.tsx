@@ -1,6 +1,7 @@
 import { Stack, useRouter } from "expo-router";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
 import * as SplashScreen from "expo-splash-screen";
+import Constants from "expo-constants";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   registerForPushNotifications,
@@ -41,7 +42,10 @@ export default function RootLayout() {
   }, [fontsLoaded]);
 
   useEffect(() => {
-    registerForPushNotifications({ silent: true });
+    const isExpoGo = Constants.appOwnership === "expo";
+    if (!isExpoGo) {
+      registerForPushNotifications({ silent: true });
+    }
 
     notificationListener.current = addNotificationResponseListener((response) => {
       const data = response.notification.request.content.data;
