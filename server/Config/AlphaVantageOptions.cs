@@ -8,7 +8,7 @@ namespace Server.Config
         public List<string> ApiKeys { get; set; } = [];
         public string BaseUrl { get; set; } = "https://www.alphavantage.co";
         public List<string> Symbols { get; set; } = [];
-        public int PollingIntervalMinutes { get; set; } = 1440;
+        public int PollingIntervalMinutes { get; set; } = 60;
         public int NewsPageSize { get; set; } = 10;
 
         /// <summary>Wait this many seconds after host start before the first ingestion run (lets Swagger / Kestrel respond first).</summary>
