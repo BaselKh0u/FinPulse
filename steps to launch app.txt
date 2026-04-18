@@ -1,0 +1,23 @@
+אוקי למי שרוצה זה איך אתם מפיעלים מובייל:
+Now to guarantee Expo Go is connected to your server:
+
+Keep mobile/.env as:
+EXPO_PUBLIC_API_BASE_URL=http://192.168.1.131:5179/api
+EXPO_PUBLIC_USE_MOCK=false
+Start backend:
+dotnet run --urls "http://0.0.0.0:5179" from server
+Start Expo fresh:
+npx expo start --lan -c from mobile
+Fully close Expo Go app, reopen, rescan QR
+Test on phone browser:
+http://192.168.1.131:5179/health (must return JSON)
+If login still says no internet after that, it’s almost certainly firewall.
+עם זה לא עובד זה אומר שהפיירוול שלכם חוסם את הקריאה צריכים להוריד אפליקציה POWERSHELL במחשב פשוט חפשו ותורידו אז לעשות
+How to open PowerShell as Admin (Windows 10/11)
+Press Win key
+Type PowerShell
+Right-click Windows PowerShell (or Terminal)
+Click Run as administrator
+Then run:
+
+netsh advfirewall firewall add rule name="FinPulse API 5179" dir=in action=allow protocol=TCP localport
