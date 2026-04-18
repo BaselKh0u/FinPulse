@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -20,10 +19,6 @@ namespace Server.Services
         private readonly string _apiKey;
         private readonly List<string> _apiKeys;
         private readonly ILogger<AlphaVantageStockIngestionService> _logger;
-        private readonly string _xBearerToken;
-        private readonly string _facebookAccessToken;
-        private readonly List<string> _facebookPageIds;
-        private readonly string _finnhubApiKey;
 
         public AlphaVantageStockIngestionService(
             HttpClient httpClient,
@@ -41,20 +36,6 @@ namespace Server.Services
                 configuration["AlphaVantage:ApiKey"],
                 Environment.GetEnvironmentVariable("AlphaVantage__ApiKey"));
             _apiKeys = ResolveApiKeys(configuration, _options, _apiKey);
-            _xBearerToken = FirstNonEmpty(
-                configuration["SocialApis:X:BearerToken"],
-                Environment.GetEnvironmentVariable("SocialApis__X__BearerToken"));
-            _facebookAccessToken = FirstNonEmpty(
-                configuration["SocialApis:Facebook:AccessToken"],
-                Environment.GetEnvironmentVariable("SocialApis__Facebook__AccessToken"));
-            _facebookPageIds = (configuration.GetSection("SocialApis:Facebook:PageIds").Get<string[]>() ?? [])
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Select(x => x.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            _finnhubApiKey = FirstNonEmpty(
-                configuration["SocialApis:Finnhub:ApiKey"],
-                Environment.GetEnvironmentVariable("SocialApis__Finnhub__ApiKey"));
         }
 
         private static string FirstNonEmpty(params string?[] values)
@@ -132,22 +113,14 @@ namespace Server.Services
             int failureCount = 0;
             var symbolIndex = 0;
 
-            var dbSymbols = await _dbContext.Stocks
-                .Select(s => s.Symbol)
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .ToListAsync(cancellationToken);
-
-            var symbolsToIngest = _options.Symbols
-                .Concat(dbSymbols)
-                .Select(s => s.Trim().ToUpperInvariant())
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            _logger.LogInformation("Running ingestion for {SymbolCount} symbols.", symbolsToIngest.Count);
-
-            foreach (var symbol in symbolsToIngest)
+            foreach (var symbolRaw in _options.Symbols)
             {
+                var symbol = symbolRaw.Trim().ToUpperInvariant();
+                if (string.IsNullOrWhiteSpace(symbol))
+                {
+                    continue;
+                }
+
                 if (symbolIndex > 0)
                 {
                     await DelayBetweenSymbolsAsync(cancellationToken);
@@ -162,10 +135,7 @@ namespace Server.Services
                     await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
                     await IngestNewsAsync(stock, cancellationToken);
                     await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
-                    await IngestFinnhubNewsAsync(stock, cancellationToken);
                     await IngestRedditSignalsAsync(stock, cancellationToken);
-                    await IngestXSignalsAsync(stock, cancellationToken);
-                    await IngestFacebookSignalsAsync(stock, cancellationToken);
                     await UpdateConfidenceScoreAsync(stock, cancellationToken);
                     successCount++;
                 }
@@ -404,76 +374,11 @@ namespace Server.Services
 
         private async Task IngestRedditSignalsAsync(Stock stock, CancellationToken cancellationToken)
         {
-            try
-            {
-                var searchTerms = new[]
-                {
-                    $"{stock.Symbol} stock",
-                    $"${stock.Symbol} investing",
-                    $"{stock.Symbol} earnings",
-                    $"{stock.Symbol} business",
-                };
-
-                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var term in searchTerms)
-                {
-                    var posts = await FetchRedditPostsAsync(term, cancellationToken);
-                    foreach (var (title, createdUtc, sourceChannel) in posts)
-                    {
-                        var dedupe = $"{createdUtc:O}|{title}";
-                        if (!seen.Add(dedupe))
-                        {
-                            continue;
-                        }
-
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
-                        var headline = title.Trim();
-                        if (headline.Length > 400)
-                        {
-                            headline = headline[..400];
-                        }
-
-                        _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
-                        {
-                            StockId = stock.StockId,
-                            SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
-                        });
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Social signal ingestion failed for {Symbol}", stock.Symbol);
-            }
-        }
-
-        private async Task<List<(string Title, DateTime CreatedUtc, string SourceChannel)>> FetchRedditPostsAsync(
-            string searchTerm,
-            CancellationToken cancellationToken)
-        {
-            var posts = new List<(string Title, DateTime CreatedUtc, string SourceChannel)>();
-            var url = $"https://www.reddit.com/search.json?q={Uri.EscapeDataString(searchTerm)}&sort=new&limit=20";
+            var url = $"https://www.reddit.com/search.json?q={Uri.EscapeDataString(stock.Symbol + " stock")}&sort=new&limit=15";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.UserAgent.ParseAdd("FinPulseBot/1.0");
             using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning(
-                    "Reddit search failed for term '{SearchTerm}' with status code {StatusCode}",
-                    searchTerm,
-                    (int)response.StatusCode);
-                return posts;
-            }
+            response.EnsureSuccessStatusCode();
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
@@ -482,7 +387,7 @@ namespace Server.Services
                 !data.TryGetProperty("children", out var children) ||
                 children.ValueKind != JsonValueKind.Array)
             {
-                return posts;
+                return;
             }
 
             foreach (var child in children.EnumerateArray())
@@ -501,319 +406,30 @@ namespace Server.Services
                 var createdUtc = post.TryGetProperty("created_utc", out var utcElement) && utcElement.TryGetDouble(out var utc)
                     ? DateTimeOffset.FromUnixTimeSeconds((long)utc).UtcDateTime
                     : DateTime.UtcNow;
-                posts.Add((title, createdUtc, "Reddit"));
-            }
 
-            return posts;
-        }
-
-        private async Task IngestFinnhubNewsAsync(Stock stock, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(_finnhubApiKey))
-            {
-                return;
-            }
-
-            try
-            {
-                var toDate = DateTime.UtcNow.Date;
-                var fromDate = toDate.AddDays(-7);
-                var url =
-                    $"https://finnhub.io/api/v1/company-news?symbol={Uri.EscapeDataString(stock.Symbol)}&from={fromDate:yyyy-MM-dd}&to={toDate:yyyy-MM-dd}&token={Uri.EscapeDataString(_finnhubApiKey)}";
-                using var response = await _httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning(
-                        "Finnhub news failed for {Symbol} with status code {StatusCode}",
-                        stock.Symbol,
-                        (int)response.StatusCode);
-                    return;
-                }
-
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-                if (document.RootElement.ValueKind != JsonValueKind.Array)
-                {
-                    return;
-                }
-
-                foreach (var item in document.RootElement.EnumerateArray().Take(30))
-                {
-                    var headline = item.TryGetProperty("headline", out var headlineEl)
-                        ? (headlineEl.GetString() ?? string.Empty).Trim()
-                        : string.Empty;
-                    if (string.IsNullOrWhiteSpace(headline))
-                    {
-                        continue;
-                    }
-
-                    var sourceName = item.TryGetProperty("source", out var sourceEl)
-                        ? (sourceEl.GetString() ?? "Finnhub").Trim()
-                        : "Finnhub";
-
-                    var createdUtc = DateTime.UtcNow;
-                    if (item.TryGetProperty("datetime", out var datetimeEl) && datetimeEl.ValueKind == JsonValueKind.Number)
-                    {
-                        var unix = datetimeEl.TryGetInt64(out var ts) ? ts : (long)datetimeEl.GetDouble();
-                        if (unix > 0)
-                        {
-                            createdUtc = DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime;
-                        }
-                    }
-
-                    var exists = await _dbContext.SentimentAnalyses
-                        .AnyAsync(
-                            sa => sa.StockId == stock.StockId
-                                  && sa.AnalyzedAt == createdUtc
-                                  && sa.Source == $"{sourceName}{SourceChannelSeparator}{headline}",
-                            cancellationToken);
-                    if (exists)
-                    {
-                        continue;
-                    }
-
-                    var score = EstimateSentimentFromTitle(headline);
-                    _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
-                    {
-                        StockId = stock.StockId,
-                        SentimentScore = score,
-                        SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                        Source = $"{sourceName}{SourceChannelSeparator}{headline}",
-                        AnalyzedAt = createdUtc
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Finnhub news ingestion failed for {Symbol}", stock.Symbol);
-            }
-        }
-
-        private async Task IngestXSignalsAsync(Stock stock, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(_xBearerToken))
-            {
-                return;
-            }
-
-            try
-            {
-                var searchTerms = new[]
-                {
-                    $"${stock.Symbol} lang:en -is:retweet",
-                    $"{stock.Symbol} stock lang:en -is:retweet",
-                    $"{stock.Symbol} earnings lang:en -is:retweet",
-                };
-
-                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var term in searchTerms)
-                {
-                    var posts = await FetchXPostsAsync(term, cancellationToken);
-                    foreach (var (title, createdUtc, sourceChannel) in posts)
-                    {
-                        var dedupe = $"{createdUtc:O}|{title}";
-                        if (!seen.Add(dedupe))
-                        {
-                            continue;
-                        }
-
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
-                        var headline = title.Trim();
-                        if (headline.Length > 400)
-                        {
-                            headline = headline[..400];
-                        }
-
-                        _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
-                        {
-                            StockId = stock.StockId,
-                            SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
-                        });
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "X signal ingestion failed for {Symbol}", stock.Symbol);
-            }
-        }
-
-        private async Task<List<(string Title, DateTime CreatedUtc, string SourceChannel)>> FetchXPostsAsync(
-            string searchTerm,
-            CancellationToken cancellationToken)
-        {
-            var posts = new List<(string Title, DateTime CreatedUtc, string SourceChannel)>();
-            var url =
-                $"https://api.twitter.com/2/tweets/search/recent?max_results=25&tweet.fields=created_at,text&query={Uri.EscapeDataString(searchTerm)}";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _xBearerToken);
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning(
-                    "X search failed for term '{SearchTerm}' with status code {StatusCode}",
-                    searchTerm,
-                    (int)response.StatusCode);
-                return posts;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!document.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-            {
-                return posts;
-            }
-
-            foreach (var post in data.EnumerateArray())
-            {
-                var title = post.TryGetProperty("text", out var textElement) ? textElement.GetString() ?? "" : "";
-                if (string.IsNullOrWhiteSpace(title))
+                var exists = await _dbContext.SentimentAnalyses
+                    .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
+                if (exists)
                 {
                     continue;
                 }
 
-                var createdUtc = DateTime.UtcNow;
-                if (post.TryGetProperty("created_at", out var createdElement))
+                var score = EstimateSentimentFromTitle(title);
+                var headline = title.Trim();
+                if (headline.Length > 400)
                 {
-                    var raw = createdElement.GetString();
-                    if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
-                    {
-                        createdUtc = parsed.ToUniversalTime();
-                    }
+                    headline = headline[..400];
                 }
 
-                posts.Add((title, createdUtc, "X"));
-            }
-
-            return posts;
-        }
-
-        private async Task IngestFacebookSignalsAsync(Stock stock, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(_facebookAccessToken) || _facebookPageIds.Count == 0)
-            {
-                return;
-            }
-
-            try
-            {
-                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var pageId in _facebookPageIds)
+                _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                 {
-                    var posts = await FetchFacebookPostsAsync(pageId, cancellationToken);
-                    foreach (var (title, createdUtc, sourceChannel) in posts)
-                    {
-                        if (!title.Contains(stock.Symbol, StringComparison.OrdinalIgnoreCase) &&
-                            !title.Contains($"${stock.Symbol}", StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
-                        var dedupe = $"{createdUtc:O}|{title}";
-                        if (!seen.Add(dedupe))
-                        {
-                            continue;
-                        }
-
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
-                        var headline = title.Trim();
-                        if (headline.Length > 400)
-                        {
-                            headline = headline[..400];
-                        }
-
-                        _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
-                        {
-                            StockId = stock.StockId,
-                            SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
-                        });
-                    }
-                }
+                    StockId = stock.StockId,
+                    SentimentScore = score,
+                    SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
+                    Source = $"Reddit{SourceChannelSeparator}{headline}",
+                    AnalyzedAt = createdUtc
+                });
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Facebook signal ingestion failed for {Symbol}", stock.Symbol);
-            }
-        }
-
-        private async Task<List<(string Title, DateTime CreatedUtc, string SourceChannel)>> FetchFacebookPostsAsync(
-            string pageId,
-            CancellationToken cancellationToken)
-        {
-            var posts = new List<(string Title, DateTime CreatedUtc, string SourceChannel)>();
-            var url =
-                $"https://graph.facebook.com/v19.0/{Uri.EscapeDataString(pageId)}/posts?limit=25&fields=message,created_time&access_token={Uri.EscapeDataString(_facebookAccessToken)}";
-            using var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning(
-                    "Facebook posts fetch failed for page {PageId} with status code {StatusCode}",
-                    pageId,
-                    (int)response.StatusCode);
-                return posts;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var payload = await JsonSerializer.DeserializeAsync<FacebookPostsPayload>(stream, cancellationToken: cancellationToken);
-            if (payload?.Data is null)
-            {
-                return posts;
-            }
-
-            foreach (var post in payload.Data)
-            {
-                var title = post.Message?.Trim();
-                if (string.IsNullOrWhiteSpace(title))
-                {
-                    continue;
-                }
-
-                var createdUtc = DateTime.UtcNow;
-                if (!string.IsNullOrWhiteSpace(post.CreatedTime) &&
-                    DateTime.TryParse(post.CreatedTime, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
-                {
-                    createdUtc = parsed.ToUniversalTime();
-                }
-
-                posts.Add((title, createdUtc, "Facebook"));
-            }
-
-            return posts;
-        }
-
-        private sealed class FacebookPostsPayload
-        {
-            [JsonPropertyName("data")]
-            public List<FacebookPostItem>? Data { get; init; }
-        }
-
-        private sealed class FacebookPostItem
-        {
-            [JsonPropertyName("message")]
-            public string? Message { get; init; }
-
-            [JsonPropertyName("created_time")]
-            public string? CreatedTime { get; init; }
         }
 
         private static decimal EstimateSentimentFromTitle(string text)
@@ -1085,19 +701,7 @@ namespace Server.Services
 
                 var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(symbol)}?interval=1d&range=5d";
                 using var response = await _httpClient.GetAsync(url, cancellationToken);
-                if ((int)response.StatusCode == 429)
-                {
-                    _logger.LogWarning("Yahoo fallback quote rate-limited (429) for {Symbol}", stock.Symbol);
-                    return false;
-                }
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning(
-                        "Yahoo fallback quote failed for {Symbol} with status code {StatusCode}",
-                        stock.Symbol,
-                        (int)response.StatusCode);
-                    return false;
-                }
+                response.EnsureSuccessStatusCode();
 
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
