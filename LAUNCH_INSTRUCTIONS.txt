@@ -1,0 +1,68 @@
+FinPulse Launch Instructions (Windows / PowerShell)
+===============================================
+
+1) Open project and check branch
+--------------------------------
+cd "C:\Users\ofekm\OneDrive\Documents\GitHub\FinPulse"
+git branch --show-current
+
+Switch to main (or another branch) if needed:
+git checkout main
+git pull
+
+
+2) Start backend API (Terminal 1)
+---------------------------------
+cd "C:\Users\ofekm\OneDrive\Documents\GitHub\FinPulse\server"
+dotnet restore
+dotnet run --urls "http://0.0.0.0:5179"
+
+Expected:
+- Server running on port 5179
+
+
+3) Start mobile app (Terminal 2)
+--------------------------------
+cd "C:\Users\ofekm\OneDrive\Documents\GitHub\FinPulse\mobile"
+npm install
+npx expo start --lan -c
+
+Then:
+- Open Expo Go on phone
+- Scan QR code
+- Log in
+
+
+4) Verify phone can reach backend
+---------------------------------
+On your phone browser, open:
+http://192.168.1.131:5179/api/publicconfig
+
+If this fails:
+- Ensure phone and PC are on same Wi-Fi
+- Ensure backend is running
+- Check Windows firewall for port 5179
+
+
+5) Common issues
+----------------
+A) "Session expired" / no data after startup:
+- Force close Expo Go
+- Clear Expo Go app data
+- Restart backend and Expo
+- Log in again
+
+B) Android Expo Go notification warning:
+- This is expected on Expo Go Android (SDK 53+)
+- Remote push is limited there
+- Use preview/dev build for full remote push behavior
+
+C) Metro cache weirdness:
+- Re-run:
+  npx expo start --lan -c
+
+
+6) Optional firewall rule (run PowerShell as Admin)
+---------------------------------------------------
+netsh advfirewall firewall add rule name="FinPulse API 5179" dir=in action=allow protocol=TCP localport=5179
+
