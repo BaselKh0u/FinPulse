@@ -251,7 +251,12 @@ public class StockController : ControllerBase
                     stockId = s.StockId,
                     symbol = s.Symbol,
                     companyName = s.CompanyName,
-                    sector = s.Sector
+                    sector = s.Sector,
+                    price = _context.PriceData
+                        .Where(p => p.StockId == s.StockId)
+                        .OrderByDescending(p => p.RecordedAt)
+                        .Select(p => (decimal?)p.Price)
+                        .FirstOrDefault() ?? 0m
                 })
                 .ToListAsync();
 
@@ -262,12 +267,51 @@ public class StockController : ControllerBase
 
             if (_alphaOptions.Symbols?.Count > 0)
             {
-                return Ok(_alphaOptions.Symbols.Select(s => new
+                var normalizedSymbols = _alphaOptions.Symbols
+                    .Select(s => s.Trim().ToUpperInvariant())
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct()
+                    .ToList();
+
+                var existingStocks = await _context.Stocks
+                    .Where(s => normalizedSymbols.Contains(s.Symbol))
+                    .Select(s => new
+                    {
+                        s.StockId,
+                        s.Symbol,
+                        s.CompanyName,
+                        s.Sector,
+                        Price = _context.PriceData
+                            .Where(p => p.StockId == s.StockId)
+                            .OrderByDescending(p => p.RecordedAt)
+                            .Select(p => (decimal?)p.Price)
+                            .FirstOrDefault() ?? 0m
+                    })
+                    .ToListAsync();
+
+                var bySymbol = existingStocks.ToDictionary(s => s.Symbol, StringComparer.OrdinalIgnoreCase);
+                return Ok(normalizedSymbols.Select(symbol =>
                 {
-                    stockId = 0,
-                    symbol = s.Trim().ToUpperInvariant(),
-                    companyName = s.Trim().ToUpperInvariant(),
-                    sector = string.Empty
+                    if (bySymbol.TryGetValue(symbol, out var existing))
+                    {
+                        return new
+                        {
+                            stockId = existing.StockId,
+                            symbol = existing.Symbol,
+                            companyName = existing.CompanyName,
+                            sector = existing.Sector,
+                            price = existing.Price
+                        };
+                    }
+
+                    return new
+                    {
+                        stockId = 0,
+                        symbol,
+                        companyName = symbol,
+                        sector = string.Empty,
+                        price = 0m
+                    };
                 }));
             }
 
