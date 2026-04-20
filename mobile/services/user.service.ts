@@ -40,13 +40,16 @@ export async function getUserProfile(): Promise<User> {
     createdAt: string;
   }>("/user/profile");
   const [firstName, ...rest] = dto.fullName.trim().split(" ");
+  const avatarUrl = typeof dto.avatarUrl === "string" && dto.avatarUrl.trim().length > 0
+    ? dto.avatarUrl.trim()
+    : undefined;
   return {
     id: String(dto.userId),
     firstName: firstName || "",
     lastName: rest.join(" ") || "",
     email: dto.email,
     phone: dto.phone,
-    avatarUrl: dto.avatarUrl,
+    avatarUrl,
     isVerified: dto.isVerified,
     joinedAt: dto.createdAt,
   };

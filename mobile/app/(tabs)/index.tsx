@@ -24,6 +24,18 @@ import { useTheme } from "@/stores/theme.store";
 import { getCurrencySymbol, subscribeCurrency, convertPrice } from "@/stores/currency.store";
 import { getRefreshMs, subscribeRefresh } from "@/stores/refresh.store";
 
+function ingestionScheduleSubtitle(cfg: DataIngestionConfig): string {
+  if (cfg.alphaVantageCooldownActive) {
+    return `Using cached DB data until ${new Date(cfg.alphaVantageBlockedUntilUtc ?? "").toLocaleString()}`;
+  }
+  const q = cfg.quotePollingIntervalMinutes ?? cfg.pollingIntervalMinutes;
+  const ext = cfg.extendedPollingIntervalMinutes ?? cfg.pollingIntervalMinutes;
+  const split = cfg.runExtendedIngestionJob !== false && ext !== q;
+  return split
+    ? `Server cache: prices ~${q} min · news/social ~${ext} min`
+    : `Server refresh schedule: every ${cfg.pollingIntervalMinutes} min`;
+}
+
 export default function HomeScreen() {
   const router = useRouter();
   const { isDark } = useTheme();
@@ -144,7 +156,11 @@ export default function HomeScreen() {
             hitSlop={10}
           >
             {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatar} />
+              <Image
+                source={{ uri: avatarUri }}
+                style={styles.avatar}
+                onError={() => setAvatarUri(null)}
+              />
             ) : (
               <View style={styles.avatarFallback}>
                 <Ionicons name="person" size={22} color={Colors.textTertiary} />
@@ -224,9 +240,7 @@ export default function HomeScreen() {
                   : "Live provider status healthy"}
               </Text>
               <Text style={styles.providerText}>
-                {ingestionConfig.alphaVantageCooldownActive
-                  ? `Using cached DB data until ${new Date(ingestionConfig.alphaVantageBlockedUntilUtc ?? "").toLocaleString()}`
-                  : `Alpha Vantage fetch schedule: every ${ingestionConfig.pollingIntervalMinutes} min`}
+                {ingestionScheduleSubtitle(ingestionConfig)}
               </Text>
             </View>
           </View>

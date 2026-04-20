@@ -161,14 +161,14 @@ export default function MarketScreen() {
                     </View>
                     <View style={styles.moodChangeRow}>
                       <Ionicons
-                        name={data.mood.change >= 0 ? "arrow-up" : "arrow-down"}
+                        name={(data.mood.change ?? 0) >= 0 ? "arrow-up" : "arrow-down"}
                         size={12}
-                        color={data.mood.change >= 0 ? Colors.success : Colors.danger}
+                        color={(data.mood.change ?? 0) >= 0 ? Colors.success : Colors.danger}
                       />
                       <Text style={[styles.moodChangeText, {
-                        color: data.mood.change >= 0 ? Colors.success : Colors.danger,
+                        color: (data.mood.change ?? 0) >= 0 ? Colors.success : Colors.danger,
                       }]}>
-                        {Math.abs(data.mood.change * 100).toFixed(0)} pts from yesterday
+                        {Math.abs((data.mood.change ?? 0) * 100).toFixed(0)} pts from yesterday
                       </Text>
                     </View>
                   </View>
@@ -205,7 +205,7 @@ export default function MarketScreen() {
               {sources.map((src, idx) => (
                 <View key={src.source}>
                   <SourceRow source={src} styles={styles} />
-                  {idx < data.sources.length - 1 && <View style={styles.sourceDivider} />}
+                  {idx < sources.length - 1 && <View style={styles.sourceDivider} />}
                 </View>
               ))}
             </View>
@@ -332,7 +332,11 @@ function MoverItem({ mover, styles, onPress }: { mover: SentimentMover; styles: 
       <View style={[styles.moverChangePill, { backgroundColor: isUp ? Colors.successLight : Colors.dangerLight }]}>
         <Ionicons name={isUp ? "arrow-up" : "arrow-down"} size={12} color={isUp ? Colors.success : Colors.danger} />
         <Text style={[styles.moverChangeText, { color: isUp ? Colors.success : Colors.danger }]}>
-          {Math.abs(mover.change * 100).toFixed(0)}
+          {(() => {
+            const c = mover.change;
+            const display = Math.abs(c) <= 1 ? c * 100 : c;
+            return Math.abs(display).toFixed(Math.abs(c) <= 1 ? 0 : 1);
+          })()}
         </Text>
       </View>
     </Pressable>

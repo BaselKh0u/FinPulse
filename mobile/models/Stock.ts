@@ -25,6 +25,7 @@ export interface StockKeyStats {
 export interface StockNewsItem {
   id: string;
   title: string;
+  summary?: string;
   source: string;
   publishedAt: string;
   url: string;
@@ -42,6 +43,8 @@ export interface StockSentiment {
 
 export interface StockDetails extends Stock {
   description: string;
+  /** ISO timestamp of latest price row (DB), after optional on-demand refresh. */
+  lastPriceUpdatedAt?: string;
   sector: string;
   industry: string;
   employees: string;

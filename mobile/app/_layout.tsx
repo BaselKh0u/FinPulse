@@ -1,11 +1,11 @@
 import { Stack, useRouter } from "expo-router";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
 import * as SplashScreen from "expo-splash-screen";
-import Constants from "expo-constants";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   registerForPushNotifications,
   addNotificationResponseListener,
+  shouldUseAndroidExpoGoLocalAlertFallback,
 } from "@/services/notification.service";
 import { getPreferences } from "@/services/user.service";
 import { getAccessToken, subscribeSessionChange } from "@/stores/auth.storage";
@@ -14,6 +14,10 @@ import { ThemeContext } from "@/stores/theme.store";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { setCurrency } from "@/stores/currency.store";
 import { setRefreshInterval } from "@/stores/refresh.store";
+import {
+  startAndroidLocalAlertSync,
+  stopAndroidLocalAlertSync,
+} from "@/services/android-local-alert-sync.service";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -42,19 +46,24 @@ export default function RootLayout() {
   }, [fontsLoaded]);
 
   useEffect(() => {
-    const isExpoGo = Constants.appOwnership === "expo";
-    if (!isExpoGo) {
-      registerForPushNotifications({ silent: true });
-    }
-
-    notificationListener.current = addNotificationResponseListener((response) => {
-      const data = response.notification.request.content.data;
-      if (data?.symbol) {
-        router.push(`/stock/${data.symbol}`);
+    let cancelled = false;
+    void (async () => {
+      await registerForPushNotifications({ silent: true });
+      const sub = await addNotificationResponseListener((response) => {
+        const data = response.notification.request.content.data as { symbol?: string };
+        if (data?.symbol) {
+          router.push(`/stock/${data.symbol}`);
+        }
+      });
+      if (!cancelled) {
+        notificationListener.current = sub;
+      } else {
+        sub.remove();
       }
-    });
+    })();
 
     return () => {
+      cancelled = true;
       notificationListener.current?.remove();
     };
   }, [router]);
@@ -89,6 +98,32 @@ export default function RootLayout() {
     return () => {
       alive = false;
       unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const syncLocalAlertMode = async () => {
+      const token = await getAccessToken();
+      if (!alive) {
+        return;
+      }
+      if (token && shouldUseAndroidExpoGoLocalAlertFallback()) {
+        startAndroidLocalAlertSync();
+      } else {
+        stopAndroidLocalAlertSync();
+      }
+    };
+
+    void syncLocalAlertMode();
+    const unsub = subscribeSessionChange(() => {
+      void syncLocalAlertMode();
+    });
+
+    return () => {
+      alive = false;
+      unsub();
+      stopAndroidLocalAlertSync();
     };
   }, []);
 

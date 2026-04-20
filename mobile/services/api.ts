@@ -2,6 +2,7 @@ import { getAccessToken } from "@/stores/auth.storage";
 
 const BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || "http://localhost:5179/api";
+const REQUEST_TIMEOUT_MS = 12000;
 
 export const USE_MOCK = process.env.EXPO_PUBLIC_USE_MOCK === "true";
 
@@ -44,10 +45,24 @@ export async function apiRequest<T>(
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "AbortError") {
+      throw new Error("Request timed out. Check if the server is running and reachable.");
+    }
+    throw new Error("Cannot reach server. Make sure phone and API are on the same network.");
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(await parseErrorMessage(response));

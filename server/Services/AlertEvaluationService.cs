@@ -8,11 +8,16 @@ namespace Server.Services
     {
         private readonly AppDbContext _dbContext;
         private readonly ILogger<AlertEvaluationService> _logger;
+        private readonly IPushNotificationService _pushNotification;
 
-        public AlertEvaluationService(AppDbContext dbContext, ILogger<AlertEvaluationService> logger)
+        public AlertEvaluationService(
+            AppDbContext dbContext,
+            ILogger<AlertEvaluationService> logger,
+            IPushNotificationService pushNotification)
         {
             _dbContext = dbContext;
             _logger = logger;
+            _pushNotification = pushNotification;
         }
 
         public async Task EvaluateAndTriggerAsync(CancellationToken cancellationToken)
@@ -21,6 +26,16 @@ namespace Server.Services
             var alerts = await _dbContext.Alerts
                 .Where(a => a.IsActive)
                 .ToListAsync(cancellationToken);
+
+            if (alerts.Count == 0)
+            {
+                return;
+            }
+
+            var stockIds = alerts.Select(a => a.StockId).Distinct().ToList();
+            var stocks = await _dbContext.Stocks.AsNoTracking()
+                .Where(s => stockIds.Contains(s.StockId))
+                .ToDictionaryAsync(s => s.StockId, cancellationToken);
 
             foreach (var alert in alerts)
             {
@@ -54,6 +69,22 @@ namespace Server.Services
                 });
 
                 alert.LastTriggeredAt = now;
+
+                if (stocks.TryGetValue(alert.StockId, out var stock))
+                {
+                    try
+                    {
+                        await _pushNotification.NotifyAlertTriggeredAsync(
+                            alert.UserId,
+                            stock.Symbol,
+                            triggerResult.Details,
+                            cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Push notify failed for alert {AlertId}", alert.AlertId);
+                    }
+                }
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);

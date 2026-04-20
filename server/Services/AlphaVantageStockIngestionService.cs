@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Server.Config;
 using Server.Data;
 using Server.Models;
+using System.Net.Http.Headers;
 
 namespace Server.Services
 {
@@ -24,16 +25,27 @@ namespace Server.Services
         private readonly string _facebookAccessToken;
         private readonly List<string> _facebookPageIds;
         private readonly string _finnhubApiKey;
+        private readonly SymbolIngestionRotationState _symbolRotation;
+        private readonly IRedditOAuthTokenProvider _redditOAuth;
+        private readonly string _redditUserAgent;
 
         public AlphaVantageStockIngestionService(
             HttpClient httpClient,
             AppDbContext dbContext,
             IOptions<AlphaVantageOptions> options,
             IConfiguration configuration,
+            SymbolIngestionRotationState symbolRotation,
+            IRedditOAuthTokenProvider redditOAuth,
             ILogger<AlphaVantageStockIngestionService> logger)
         {
             _httpClient = httpClient;
             _dbContext = dbContext;
+            _symbolRotation = symbolRotation;
+            _redditOAuth = redditOAuth;
+            _redditUserAgent = FirstNonEmpty(
+                configuration["SocialApis:Reddit:UserAgent"],
+                Environment.GetEnvironmentVariable("SocialApis__Reddit__UserAgent"),
+                "FinPulse-ingestion/1.0");
             _logger = logger;
             _options = options.Value;
             _apiKey = FirstNonEmpty(
@@ -68,6 +80,26 @@ namespace Server.Services
             }
 
             return string.Empty;
+        }
+
+        /// <summary>
+        /// PK is (StockId, AnalyzedAt). External feeds often only have second precision; multiple rows in one
+        /// SaveChanges batch would collide. Spread within the same UTC second deterministically from <paramref name="uniquenessMaterial"/> (matches <see cref="SentimentAnalysis.Source"/>).
+        /// </summary>
+        private static DateTime StableAnalyzedAtUtc(DateTime publishedUtc, string uniquenessMaterial)
+        {
+            unchecked
+            {
+                ulong hash = 14695981039346656037UL;
+                foreach (var c in uniquenessMaterial)
+                {
+                    hash ^= c;
+                    hash *= 1099511628211UL;
+                }
+
+                var spread = (long)(hash % 9_999_999UL);
+                return publishedUtc.AddTicks(spread);
+            }
         }
 
         private static List<string> ResolveApiKeys(IConfiguration configuration, AlphaVantageOptions options, string fallbackKey)
@@ -114,13 +146,21 @@ namespace Server.Services
             }
         }
 
-        public async Task IngestAsync(CancellationToken cancellationToken)
+        public async Task IngestAsync(CancellationToken cancellationToken, IngestionScope scope = IngestionScope.Full)
         {
-            if (_apiKeys.Count == 0)
+            var runQuotes = scope is IngestionScope.Full or IngestionScope.QuotesOnly;
+            var runExtended = scope is IngestionScope.Full or IngestionScope.ExtendedOnly;
+
+            if (!_options.UseAlphaVantageIngestion)
             {
-                _logger.LogWarning("Skipping ingestion because AlphaVantage API key is empty.");
+                _logger.LogInformation(
+                    "Alpha Vantage HTTP calls are disabled (UseAlphaVantageIngestion=false). Using Yahoo/Stooq for quotes; AV news skipped. Finnhub/social still run when configured.");
             }
-            if (GetAvailableApiKey() is null)
+            else if (_apiKeys.Count == 0)
+            {
+                _logger.LogWarning("Alpha Vantage API key is empty; AV quote/news skipped — using Yahoo/Stooq and other providers.");
+            }
+            else if (GetAvailableApiKey() is null)
             {
                 AlphaVantageRateLimitGuard.IsAnyBlocked(out var blockedUntilUtc, out var reason);
                 _logger.LogWarning(
@@ -142,11 +182,40 @@ namespace Server.Services
                 .Select(s => s.Trim().ToUpperInvariant())
                 .Where(s => !string.IsNullOrWhiteSpace(s))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(s => s, StringComparer.Ordinal)
                 .ToList();
 
-            _logger.LogInformation("Running ingestion for {SymbolCount} symbols.", symbolsToIngest.Count);
+            var batchSymbols = symbolsToIngest;
+            if (scope == IngestionScope.QuotesOnly)
+            {
+                batchSymbols = _symbolRotation.NextBatch(symbolsToIngest, _options.MaxSymbolsPerQuoteBatch, IngestionScope.QuotesOnly);
+                if (_options.MaxSymbolsPerQuoteBatch > 0 && symbolsToIngest.Count > batchSymbols.Count)
+                {
+                    _logger.LogInformation(
+                        "Quote ingestion batch: {BatchCount} of {Total} symbols this tick (round-robin).",
+                        batchSymbols.Count,
+                        symbolsToIngest.Count);
+                }
+            }
+            else if (scope == IngestionScope.ExtendedOnly)
+            {
+                batchSymbols = _symbolRotation.NextBatch(symbolsToIngest, _options.MaxSymbolsPerExtendedBatch, IngestionScope.ExtendedOnly);
+                if (_options.MaxSymbolsPerExtendedBatch > 0 && symbolsToIngest.Count > batchSymbols.Count)
+                {
+                    _logger.LogInformation(
+                        "Extended ingestion batch: {BatchCount} of {Total} symbols this tick (round-robin).",
+                        batchSymbols.Count,
+                        symbolsToIngest.Count);
+                }
+            }
 
-            foreach (var symbol in symbolsToIngest)
+            _logger.LogInformation(
+                "Running ingestion scope={Scope} for {RunCount} symbols ({TotalTracked} tracked).",
+                scope,
+                batchSymbols.Count,
+                symbolsToIngest.Count);
+
+            foreach (var symbol in batchSymbols)
             {
                 if (symbolIndex > 0)
                 {
@@ -158,15 +227,28 @@ namespace Server.Services
                 try
                 {
                     var stock = await GetOrCreateStockAsync(symbol, cancellationToken);
-                    await IngestQuoteAsync(stock, cancellationToken);
-                    await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
-                    await IngestNewsAsync(stock, cancellationToken);
-                    await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
-                    await IngestFinnhubNewsAsync(stock, cancellationToken);
-                    await IngestRedditSignalsAsync(stock, cancellationToken);
-                    await IngestXSignalsAsync(stock, cancellationToken);
-                    await IngestFacebookSignalsAsync(stock, cancellationToken);
-                    await UpdateConfidenceScoreAsync(stock, cancellationToken);
+
+                    if (runQuotes)
+                    {
+                        await IngestQuoteAsync(stock, cancellationToken);
+                    }
+
+                    if (runExtended)
+                    {
+                        if (runQuotes)
+                        {
+                            await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
+                        }
+
+                        await IngestNewsAsync(stock, cancellationToken);
+                        await DelayBetweenAlphaVantageCallsAsync(cancellationToken);
+                        await IngestFinnhubNewsAsync(stock, cancellationToken);
+                        await IngestRedditSignalsAsync(stock, cancellationToken);
+                        await IngestXSignalsAsync(stock, cancellationToken);
+                        await IngestFacebookSignalsAsync(stock, cancellationToken);
+                        await UpdateConfidenceScoreAsync(stock, cancellationToken);
+                    }
+
                     successCount++;
                 }
                 catch (HttpRequestException ex) when (ex.Message.Contains("429") || ex.Message.Contains("rate"))
@@ -183,11 +265,18 @@ namespace Server.Services
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            
+
             if (successCount > 0)
-                _logger.LogInformation("Stock ingestion completed: {SuccessCount} symbols updated, {FailureCount} failed.", successCount, failureCount);
+                _logger.LogInformation(
+                    "Stock ingestion ({Scope}) completed: {SuccessCount} symbols updated, {FailureCount} failed.",
+                    scope,
+                    successCount,
+                    failureCount);
             else if (failureCount > 0)
-                _logger.LogWarning("Stock ingestion failed for all {Count} symbols. Check API key and rate limits.", failureCount);
+                _logger.LogWarning(
+                    "Stock ingestion ({Scope}) failed for all {Count} symbols. Check API key and rate limits.",
+                    scope,
+                    failureCount);
         }
 
         private Task DelayBetweenAlphaVantageCallsAsync(CancellationToken cancellationToken)
@@ -234,66 +323,80 @@ namespace Server.Services
 
     private async Task IngestQuoteAsync(Stock stock, CancellationToken cancellationToken)
         {
-            var candidateKeys = GetAvailableApiKeys().ToList();
-            foreach (var apiKey in candidateKeys)
+            if (_options.UseAlphaVantageIngestion)
             {
-                var url =
-                    $"{_options.BaseUrl}/query?function=GLOBAL_QUOTE&symbol={stock.Symbol}&apikey={apiKey}";
-                using var response = await _httpClient.GetAsync(url, cancellationToken);
-                response.EnsureSuccessStatusCode();
-
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-                // Check for rate limit message
-                if (document.RootElement.TryGetProperty("Note", out var noteProp))
+                var candidateKeys = GetAvailableApiKeys().ToList();
+                foreach (var apiKey in candidateKeys)
                 {
-                    var note = noteProp.GetString() ?? "";
-                    if (note.Contains("rate limit", StringComparison.OrdinalIgnoreCase))
+                    try
                     {
-                        AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, note);
+                        var url =
+                            $"{_options.BaseUrl}/query?function=GLOBAL_QUOTE&symbol={stock.Symbol}&apikey={apiKey}";
+                    using var response = await _httpClient.GetAsync(url, cancellationToken);
+                    response.EnsureSuccessStatusCode();
+
+                    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+                    // Check for rate limit message
+                    if (document.RootElement.TryGetProperty("Note", out var noteProp))
+                    {
+                        var note = noteProp.GetString() ?? "";
+                        if (note.Contains("rate limit", StringComparison.OrdinalIgnoreCase))
+                        {
+                            AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, note);
+                            continue;
+                        }
+                    }
+                    if (document.RootElement.TryGetProperty("Information", out var infoProp))
+                    {
+                        var info = infoProp.GetString() ?? "";
+                        AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, info);
+                        if (info.Contains("requests per day", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                    }
+
+                    if (!document.RootElement.TryGetProperty("Global Quote", out var quote))
+                    {
+                        continue;
+                    }
+
+                    if (!TryGetDecimal(quote, "05. price", out var price))
+                    {
+                        continue;
+                    }
+
+                    TryGetLong(quote, "06. volume", out var volume);
+                    var recordedAt = DateTime.UtcNow;
+
+                    var recentDuplicate = await _dbContext.PriceData
+                        .AnyAsync(
+                            p => p.StockId == stock.StockId &&
+                                 p.RecordedAt >= recordedAt.AddSeconds(-15) &&
+                                 p.Price == price,
+                            cancellationToken);
+                    if (recentDuplicate)
+                    {
+                        return;
+                    }
+
+                    _dbContext.PriceData.Add(new PriceData
+                    {
+                        StockId = stock.StockId,
+                        Price = price,
+                        Volume = volume,
+                        RecordedAt = recordedAt
+                    });
+                    return;
+                }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Alpha Vantage quote request failed for {Symbol}, trying next key or fallback.", stock.Symbol);
                         continue;
                     }
                 }
-                if (document.RootElement.TryGetProperty("Information", out var infoProp))
-                {
-                    var info = infoProp.GetString() ?? "";
-                    AlphaVantageRateLimitGuard.MarkIfLimited(apiKey, info);
-                    if (info.Contains("requests per day", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                }
-
-                if (!document.RootElement.TryGetProperty("Global Quote", out var quote))
-                {
-                    return;
-                }
-
-                if (!TryGetDecimal(quote, "05. price", out var price))
-                {
-                    return;
-                }
-
-                TryGetLong(quote, "06. volume", out var volume);
-                // Use ingestion time to preserve intraday history across polling cycles.
-                var recordedAt = DateTime.UtcNow;
-
-                var exists = await _dbContext.PriceData
-                    .AnyAsync(p => p.StockId == stock.StockId && p.RecordedAt == recordedAt, cancellationToken);
-                if (exists)
-                {
-                    return;
-                }
-
-                _dbContext.PriceData.Add(new PriceData
-                {
-                    StockId = stock.StockId,
-                    Price = price,
-                    Volume = volume,
-                    RecordedAt = recordedAt
-                });
-                return;
             }
 
             var yahooFallbackWorked = await TryIngestQuoteFromYahooAsync(stock, cancellationToken);
@@ -313,6 +416,11 @@ namespace Server.Services
 
     private async Task IngestNewsAsync(Stock stock, CancellationToken cancellationToken)
         {
+            if (!_options.UseAlphaVantageIngestion)
+            {
+                return;
+            }
+
             var candidateKeys = GetAvailableApiKeys().ToList();
             if (candidateKeys.Count == 0)
             {
@@ -362,20 +470,14 @@ namespace Server.Services
                     }
 
                     var publishedAt = ParseNewsTimestamp(GetJsonString(publishedProp)) ?? DateTime.UtcNow;
-                    var exists = await _dbContext.SentimentAnalyses
-                        .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == publishedAt, cancellationToken);
-                    if (exists)
-                    {
-                        continue;
-                    }
-
-                    var sentimentLabel = item.TryGetProperty("overall_sentiment_label", out var labelProp)
-                        ? GetJsonString(labelProp) ?? "Neutral"
-                        : "Neutral";
 
                     var sentimentScore = item.TryGetProperty("overall_sentiment_score", out var scoreProp)
                         ? GetJsonDecimal(scoreProp)
                         : 0m;
+
+                    var overallLabel = item.TryGetProperty("overall_sentiment_label", out var labelProp)
+                        ? GetJsonString(labelProp)
+                        : null;
 
                     var headline = item.TryGetProperty("title", out var titleProp)
                         ? GetJsonString(titleProp) ?? "Article"
@@ -387,13 +489,29 @@ namespace Server.Services
                         ? publisher.Trim()
                         : "News";
 
+                    var fullSource = $"{channel}{SourceChannelSeparator}{headline}";
+                    var exists = await _dbContext.SentimentAnalyses
+                        .AnyAsync(sa => sa.StockId == stock.StockId && sa.Source == fullSource, cancellationToken);
+                    if (exists)
+                    {
+                        continue;
+                    }
+
+                    var headlineScore = NewsSentimentScorer.ScoreText(headline);
+                    var labelScore = NewsSentimentScorer.ScoreFromAlphaVantageLabel(overallLabel);
+                    var blendedScore = Math.Clamp(
+                        sentimentScore * 0.28m + headlineScore * 0.27m + labelScore * 0.45m,
+                        -1m,
+                        1m);
+                    var sentimentLabel = NewsSentimentScorer.LabelFromScore(blendedScore);
+
                     _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                     {
                         StockId = stock.StockId,
-                        SentimentScore = sentimentScore,
+                        SentimentScore = blendedScore,
                         SentimentLabel = sentimentLabel,
-                        Source = $"{channel}{SourceChannelSeparator}{headline}",
-                        AnalyzedAt = publishedAt
+                        Source = fullSource,
+                        AnalyzedAt = StableAnalyzedAtUtc(publishedAt, fullSource)
                     });
                 }
                 return;
@@ -426,27 +544,29 @@ namespace Server.Services
                             continue;
                         }
 
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
                         var headline = title.Trim();
                         if (headline.Length > 400)
                         {
                             headline = headline[..400];
                         }
 
+                        var fullSource = $"{sourceChannel}{SourceChannelSeparator}{headline}";
+                        var exists = await _dbContext.SentimentAnalyses
+                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.Source == fullSource, cancellationToken);
+                        if (exists)
+                        {
+                            continue;
+                        }
+
+                        var score = NewsSentimentScorer.ScoreText(title);
+
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
                             StockId = stock.StockId,
                             SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
+                            SentimentLabel = NewsSentimentScorer.LabelFromScore(score),
+                            Source = fullSource,
+                            AnalyzedAt = StableAnalyzedAtUtc(createdUtc, fullSource)
                         });
                     }
                 }
@@ -462,9 +582,19 @@ namespace Server.Services
             CancellationToken cancellationToken)
         {
             var posts = new List<(string Title, DateTime CreatedUtc, string SourceChannel)>();
-            var url = $"https://www.reddit.com/search.json?q={Uri.EscapeDataString(searchTerm)}&sort=new&limit=20";
+
+            var oauthToken = await _redditOAuth.GetAccessTokenAsync(cancellationToken);
+            var url = string.IsNullOrEmpty(oauthToken)
+                ? $"https://www.reddit.com/search.json?q={Uri.EscapeDataString(searchTerm)}&sort=new&limit=20"
+                : $"https://oauth.reddit.com/search.json?q={Uri.EscapeDataString(searchTerm)}&sort=new&t=week&limit=25&type=link";
+
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.UserAgent.ParseAdd("FinPulseBot/1.0");
+            HttpUserAgentHeader.Set(request.Headers, _redditUserAgent);
+            if (!string.IsNullOrEmpty(oauthToken))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
+            }
+
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -517,7 +647,7 @@ namespace Server.Services
             try
             {
                 var toDate = DateTime.UtcNow.Date;
-                var fromDate = toDate.AddDays(-7);
+                var fromDate = toDate.AddDays(-30);
                 var url =
                     $"https://finnhub.io/api/v1/company-news?symbol={Uri.EscapeDataString(stock.Symbol)}&from={fromDate:yyyy-MM-dd}&to={toDate:yyyy-MM-dd}&token={Uri.EscapeDataString(_finnhubApiKey)}";
                 using var response = await _httpClient.GetAsync(url, cancellationToken);
@@ -561,25 +691,24 @@ namespace Server.Services
                         }
                     }
 
+                    var fullSource = $"{sourceName}{SourceChannelSeparator}{headline}";
                     var exists = await _dbContext.SentimentAnalyses
                         .AnyAsync(
-                            sa => sa.StockId == stock.StockId
-                                  && sa.AnalyzedAt == createdUtc
-                                  && sa.Source == $"{sourceName}{SourceChannelSeparator}{headline}",
+                            sa => sa.StockId == stock.StockId && sa.Source == fullSource,
                             cancellationToken);
                     if (exists)
                     {
                         continue;
                     }
 
-                    var score = EstimateSentimentFromTitle(headline);
+                    var score = NewsSentimentScorer.ScoreText(headline);
                     _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                     {
                         StockId = stock.StockId,
                         SentimentScore = score,
-                        SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                        Source = $"{sourceName}{SourceChannelSeparator}{headline}",
-                        AnalyzedAt = createdUtc
+                        SentimentLabel = NewsSentimentScorer.LabelFromScore(score),
+                        Source = fullSource,
+                        AnalyzedAt = StableAnalyzedAtUtc(createdUtc, fullSource)
                     });
                 }
             }
@@ -617,27 +746,29 @@ namespace Server.Services
                             continue;
                         }
 
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
                         var headline = title.Trim();
                         if (headline.Length > 400)
                         {
                             headline = headline[..400];
                         }
 
+                        var fullSource = $"{sourceChannel}{SourceChannelSeparator}{headline}";
+                        var exists = await _dbContext.SentimentAnalyses
+                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.Source == fullSource, cancellationToken);
+                        if (exists)
+                        {
+                            continue;
+                        }
+
+                        var score = NewsSentimentScorer.ScoreText(title);
+
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
                             StockId = stock.StockId,
                             SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
+                            SentimentLabel = NewsSentimentScorer.LabelFromScore(score),
+                            Source = fullSource,
+                            AnalyzedAt = StableAnalyzedAtUtc(createdUtc, fullSource)
                         });
                     }
                 }
@@ -725,27 +856,29 @@ namespace Server.Services
                             continue;
                         }
 
-                        var exists = await _dbContext.SentimentAnalyses
-                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.AnalyzedAt == createdUtc, cancellationToken);
-                        if (exists)
-                        {
-                            continue;
-                        }
-
-                        var score = EstimateSentimentFromTitle(title);
                         var headline = title.Trim();
                         if (headline.Length > 400)
                         {
                             headline = headline[..400];
                         }
 
+                        var fullSource = $"{sourceChannel}{SourceChannelSeparator}{headline}";
+                        var exists = await _dbContext.SentimentAnalyses
+                            .AnyAsync(sa => sa.StockId == stock.StockId && sa.Source == fullSource, cancellationToken);
+                        if (exists)
+                        {
+                            continue;
+                        }
+
+                        var score = NewsSentimentScorer.ScoreText(title);
+
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
                             StockId = stock.StockId,
                             SentimentScore = score,
-                            SentimentLabel = score > 0.2m ? "Positive" : score < -0.2m ? "Negative" : "Neutral",
-                            Source = $"{sourceChannel}{SourceChannelSeparator}{headline}",
-                            AnalyzedAt = createdUtc
+                            SentimentLabel = NewsSentimentScorer.LabelFromScore(score),
+                            Source = fullSource,
+                            AnalyzedAt = StableAnalyzedAtUtc(createdUtc, fullSource)
                         });
                     }
                 }
@@ -814,37 +947,6 @@ namespace Server.Services
 
             [JsonPropertyName("created_time")]
             public string? CreatedTime { get; init; }
-        }
-
-        private static decimal EstimateSentimentFromTitle(string text)
-        {
-            var lower = text.ToLowerInvariant();
-            
-            // Positive indicators
-            var positives = new[] { 
-                "beat", "growth", "surge", "bull", "strong", "upgrade", "profit", "gains", 
-                "rally", "soar", "boom", "excellent", "fantastic", "amazing", "huge", "rocket",
-                "momentum", "positive", "outperform", "bullish", "buy", "recommend", "surge"
-            };
-            
-            // Negative indicators
-            var negatives = new[] { 
-                "miss", "drop", "bear", "weak", "downgrade", "lawsuit", "decline", "crash",
-                "loss", "falling", "terrible", "awful", "horrible", "tank", "plunge", "risk",
-                "concern", "selloff", "bearish", "sell", "warning", "loss", "bankruptcy"
-            };
-
-            var positiveHits = positives.Count(p => lower.Contains(p));
-            var negativeHits = negatives.Count(p => lower.Contains(p));
-            
-            // Calculate score: more hits = stronger sentiment
-            var score = 0m;
-            if (positiveHits > 0 || negativeHits > 0)
-            {
-                score = (positiveHits - negativeHits) * 0.15m; // Scale down a bit
-            }
-            
-            return Math.Clamp(score, -1m, 1m);
         }
 
         private async Task UpdateConfidenceScoreAsync(Stock stock, CancellationToken cancellationToken)

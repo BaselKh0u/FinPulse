@@ -20,10 +20,18 @@ public class PublicConfigController : ControllerBase
         var hasAnyKey = !string.IsNullOrWhiteSpace(o.ApiKey) || (o.ApiKeys?.Any(k => !string.IsNullOrWhiteSpace(k)) ?? false);
         return Ok(new
         {
+            useAlphaVantageIngestion = o.UseAlphaVantageIngestion,
+            runExtendedIngestionJob = o.RunExtendedIngestionJob,
+            quotePollingIntervalMinutes = Math.Max(1, o.QuotePollingIntervalMinutes),
+            extendedPollingIntervalMinutes = Math.Max(1, o.ExtendedPollingIntervalMinutes),
             pollingIntervalMinutes = Math.Max(1, o.PollingIntervalMinutes),
             delayBetweenSymbolIngestionSeconds = Math.Clamp(o.DelayBetweenSymbolIngestionSeconds, 0, 3600),
             delayBetweenAlphaVantageCallsSeconds = Math.Clamp(o.DelayBetweenAlphaVantageCallsSeconds, 0, 600),
             startupDelaySeconds = Math.Clamp(o.StartupDelaySeconds, 0, 600),
+            extendedJobStartupOffsetSeconds = Math.Clamp(o.ExtendedJobStartupOffsetSeconds, 0, 7200),
+            maxSymbolsPerQuoteBatch = Math.Max(0, o.MaxSymbolsPerQuoteBatch),
+            maxSymbolsPerExtendedBatch = Math.Max(0, o.MaxSymbolsPerExtendedBatch),
+            alphaVantageSymbolSearchMinIntervalSeconds = Math.Clamp(o.AlphaVantageSymbolSearchMinIntervalSeconds, 0, 86400),
             hasAlphaVantageKey = hasAnyKey,
             alphaVantageCooldownActive = cooldownActive,
             alphaVantageBlockedUntilUtc = blockedUntilUtc,

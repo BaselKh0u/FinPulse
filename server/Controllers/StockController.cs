@@ -7,6 +7,7 @@ using Server.Config;
 using Server.Data;
 using Server.Models;
 using Server.Services;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 
@@ -22,6 +23,8 @@ public class StockController : ControllerBase
     private readonly List<string> _apiKeys;
     private readonly ILogger<StockController> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly AlphaVantageSymbolSearchThrottle _symbolSearchThrottle;
+    private readonly IStockMarketDataService _marketData;
 
     public StockController(
         AppDbContext context,
@@ -29,7 +32,9 @@ public class StockController : ControllerBase
         IOptions<AlphaVantageOptions> options,
         IConfiguration configuration,
         ILogger<StockController> logger,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        AlphaVantageSymbolSearchThrottle symbolSearchThrottle,
+        IStockMarketDataService marketData)
     {
         _context = context;
         _httpClientFactory = httpClientFactory;
@@ -41,6 +46,34 @@ public class StockController : ControllerBase
         _apiKeys = ResolveApiKeys(configuration, _alphaOptions, _apiKey);
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _symbolSearchThrottle = symbolSearchThrottle;
+        _marketData = marketData;
+    }
+
+    private static string FormatCompactNumber(long? value)
+    {
+        if (value is null or <= 0)
+        {
+            return "N/A";
+        }
+
+        var n = value.Value;
+        if (n >= 1_000_000_000)
+        {
+            return $"{n / 1_000_000_000d:F2}B";
+        }
+
+        if (n >= 1_000_000)
+        {
+            return $"{n / 1_000_000d:F1}M";
+        }
+
+        if (n >= 1_000)
+        {
+            return $"{n / 1_000d:F1}K";
+        }
+
+        return n.ToString("N0", CultureInfo.InvariantCulture);
     }
 
     private static string FirstNonEmpty(params string?[] values)
@@ -95,7 +128,7 @@ public class StockController : ControllerBase
     // Returns the logged-in user's watchlist with latest price for each stock
     [Authorize]
     [HttpGet]
-    public async Task<IActionResult> GetWatchlist()
+    public async Task<IActionResult> GetWatchlist(CancellationToken cancellationToken)
     {
         var userId = GetUserId();
 
@@ -105,30 +138,45 @@ public class StockController : ControllerBase
                 w => w.StockId,
                 s => s.StockId,
                 (w, s) => new { w.AddedAt, Stock = s })
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
-        var stockIds = watchlist.Select(w => w.Stock.StockId).ToList();
+        var stockIds = watchlist.Select(w => w.Stock!.StockId).ToList();
 
         // Fetch latest PriceData for each stock in one query
         var latestPrices = await _context.PriceData
             .Where(p => stockIds.Contains(p.StockId))
             .GroupBy(p => p.StockId)
             .Select(g => g.OrderByDescending(p => p.RecordedAt).First())
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
         var priceMap = latestPrices.ToDictionary(p => p.StockId);
 
+        var symbols = watchlist.Select(w => w.Stock!.Symbol).ToList();
+        var quotes = await _marketData.GetYahooQuotesAsync(symbols, cancellationToken);
+
         var result = watchlist.Select(w =>
         {
-            priceMap.TryGetValue(w.Stock.StockId, out var price);
+            var stk = w.Stock!;
+            priceMap.TryGetValue(stk.StockId, out var dbRow);
+            var symUpper = stk.Symbol.Trim().ToUpperInvariant();
+            _ = quotes.TryGetValue(symUpper, out var snap);
+            var hasYahoo = snap.Price > 0;
+
+            var dbPx = dbRow?.Price ?? 0m;
+            var px = hasYahoo ? snap.Price : dbPx;
+            var change = hasYahoo ? snap.Change : 0m;
+            var changePct = hasYahoo ? snap.ChangePercent : 0m;
+
             return new
             {
-                stockId = w.Stock.StockId,
-                symbol = w.Stock.Symbol,
-                companyName = w.Stock.CompanyName,
-                sector = w.Stock.Sector,
-                price = price?.Price ?? 0,
-                volume = price?.Volume ?? 0,
+                stockId = stk.StockId,
+                symbol = stk.Symbol,
+                companyName = stk.CompanyName,
+                sector = stk.Sector,
+                price = px,
+                change,
+                changePercent = changePct,
+                volume = dbRow?.Volume ?? 0,
                 addedAt = w.AddedAt
             };
         });
@@ -298,6 +346,12 @@ public class StockController : ControllerBase
                     "Skipping Alpha Vantage search, all keys are cooling down. First unblock at {BlockedUntil}. Reason: {Reason}",
                     blockedUntilUtc, reason);
             }
+            else if (!_symbolSearchThrottle.TryConsume(out var searchRetryAfter))
+            {
+                _logger.LogWarning(
+                    "Skipping Alpha Vantage symbol search (min-interval throttle). Retry after ~{RetrySeconds:F0}s.",
+                    searchRetryAfter?.TotalSeconds ?? 0);
+            }
             else
             {
                 _logger.LogInformation("No DB results for {Query}, trying Alpha Vantage", q);
@@ -420,7 +474,7 @@ public class StockController : ControllerBase
     {
         using var scope = _serviceProvider.CreateScope();
         var ingestionService = scope.ServiceProvider.GetRequiredService<IStockIngestionService>();
-        await ingestionService.IngestAsync(CancellationToken.None);
+        await ingestionService.IngestAsync(CancellationToken.None, IngestionScope.Full);
 
         var latestPriceAt = await _context.PriceData
             .OrderByDescending(p => p.RecordedAt)
@@ -552,25 +606,212 @@ public class StockController : ControllerBase
         if (stock == null)
             return NotFound(new { message = "Stock not found." });
 
-        var priceHistory = await _context.PriceData
+        await _marketData.RefreshQuoteIfStaleAsync(_context, stock);
+
+        var priceRows = await _context.PriceData
             .Where(p => p.StockId == stock.StockId)
             .OrderByDescending(p => p.RecordedAt)
-            .Take(30)
-            .Select(p => new { price = p.Price, volume = p.Volume, recordedAt = p.RecordedAt })
+            .Take(90)
+            .Select(p => new { p.Price, p.Volume, p.RecordedAt })
             .ToListAsync();
 
-        var latestPrice = priceHistory.FirstOrDefault();
+        var chronological = priceRows.OrderBy(p => p.RecordedAt).ToList();
+        var latestRow = chronological.Count > 0 ? chronological[^1] : null;
+
+        var enrichment = await _marketData.GetEnrichmentAsync(stock.Symbol);
+
+        var sentiments = await _context.SentimentAnalyses
+            .AsNoTracking()
+            .Where(sa => sa.StockId == stock.StockId)
+            .OrderByDescending(sa => sa.AnalyzedAt)
+            .Take(400)
+            .Select(sa => new { sa.SentimentScore, sa.AnalyzedAt, sa.SentimentLabel, sa.Source })
+            .ToListAsync();
+
+        var band = NewsSentimentScorer.NeutralBand;
+        var bullish = sentiments.Count(s => s.SentimentScore > band);
+        var bearish = sentiments.Count(s => s.SentimentScore < -band);
+        var neutralCount = sentiments.Count(s => Math.Abs(s.SentimentScore) <= band);
+
+        double avgRaw = sentiments.Count > 0 ? sentiments.Average(s => (double)s.SentimentScore) : 0;
+        var sentimentScore01 = Math.Round((avgRaw + 1.0) / 2.0, 4);
+
+        var confidence = await _context.ConfidenceScores
+            .AsNoTracking()
+            .Where(c => c.StockId == stock.StockId)
+            .OrderByDescending(c => c.CalculatedAt)
+            .FirstOrDefaultAsync();
+
+        double volatilityPct = 0;
+        if (chronological.Count >= 3)
+        {
+            var closes = chronological.Select(c => (double)c.Price).ToList();
+            var returns = new List<double>();
+            for (var i = 1; i < closes.Count; i++)
+            {
+                if (closes[i - 1] == 0)
+                {
+                    continue;
+                }
+
+                returns.Add((closes[i] - closes[i - 1]) / closes[i - 1]);
+            }
+
+            if (returns.Count >= 2)
+            {
+                var avg = returns.Average();
+                var variance = returns.Select(r => Math.Pow(r - avg, 2)).Average();
+                var dailyStd = Math.Sqrt(variance);
+                volatilityPct = Math.Round(dailyStd * Math.Sqrt(252.0) * 100.0, 2);
+            }
+        }
+
+        var stabilityScore =
+            confidence is not null
+                ? Math.Clamp((int)Math.Round(confidence.ConfidenceValue * 100f, MidpointRounding.AwayFromZero), 0, 100)
+                : chronological.Count >= 10
+                    ? Math.Clamp(100 - (int)Math.Round(volatilityPct), 0, 100)
+                    : 50;
+
+        var fromDb = sentiments.Select((sa, idx) =>
+        {
+            var headline = DetailHeadlineFromSource(sa.Source, stock.Symbol);
+            return new
+            {
+                id = $"det-{stock.StockId}-{sa.AnalyzedAt.Ticks}-{idx}",
+                title = headline,
+                summary = string.IsNullOrWhiteSpace(sa.SentimentLabel) ? headline : sa.SentimentLabel,
+                source = DetailChannelFromSource(sa.Source),
+                publishedAt = sa.AnalyzedAt,
+                sentiment = NewsSentimentScorer.WireLabel(sa.SentimentScore),
+                sentimentScore = sa.SentimentScore,
+                url = "#"
+            };
+        }).ToList();
+
+        var wireNews = await _marketData.FetchFinnhubCompanyNewsAsync(stock.Symbol);
+        var fromWire = wireNews.Select((w, i) =>
+        {
+            var wScore = NewsSentimentScorer.ScoreText(w.Title);
+            return new
+            {
+                id = $"fn-{stock.StockId}-{w.PublishedAtUtc.Ticks}-{i}",
+                title = w.Title,
+                summary = w.Title,
+                source = w.Source,
+                publishedAt = w.PublishedAtUtc,
+                sentiment = NewsSentimentScorer.WireLabel(wScore),
+                sentimentScore = wScore,
+                url = "#"
+            };
+        }).ToList();
+
+        var newsItems = fromDb
+            .Concat(fromWire)
+            .OrderByDescending(n => n.publishedAt)
+            .GroupBy(n => n.title.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(15)
+            .ToList();
+
+        var latestPx = latestRow?.Price ?? 0m;
+        var prices = chronological.Select(p => p.Price).ToList();
+        var histHigh = prices.Count > 0 ? prices.Max() : latestPx;
+        var histLow = prices.Count > 0 ? prices.Min() : latestPx;
+        var histOpen = prices.Count > 0 ? prices[0] : latestPx;
+
+        var open = enrichment?.Open ?? histOpen;
+        var high = enrichment?.High ?? histHigh;
+        var low = enrichment?.Low ?? histLow;
+        var close = enrichment?.RegularMarketPrice ?? latestPx;
+
+        long? volNum = enrichment?.RegularMarketVolume ?? (latestRow != null ? latestRow.Volume : null);
+        var sectorOut = !string.IsNullOrWhiteSpace(enrichment?.Sector) ? enrichment!.Sector! : stock.Sector;
+
+        var companyDescription = !string.IsNullOrWhiteSpace(enrichment?.CompanyDescription)
+            ? enrichment!.CompanyDescription!
+            : (volatilityPct > 0
+                ? $"Annualized historical volatility (from recent DB prices): ~{volatilityPct:F1}%."
+                : "Price and sentiment data are sourced from your FinPulse backend.");
 
         return Ok(new
         {
             stockId = stock.StockId,
             symbol = stock.Symbol,
             companyName = stock.CompanyName,
-            sector = stock.Sector,
-            latestPrice = latestPrice?.price ?? 0,
-            lastRetrievedAt = latestPrice?.recordedAt,
-            priceHistory
+            companyDescription,
+            sector = sectorOut,
+            industry = enrichment?.Industry ?? "N/A",
+            employeesDisplay = enrichment?.EmployeesDisplay ?? "N/A",
+            headquartersDisplay = enrichment?.HeadquartersDisplay ?? "N/A",
+            latestPrice = latestRow?.Price ?? 0,
+            lastRetrievedAt = latestRow?.RecordedAt,
+            priceHistory = chronological,
+            keyStats = new
+            {
+                open,
+                high,
+                low,
+                close,
+                volume = FormatCompactNumber(volNum),
+                avgVolume = FormatCompactNumber(enrichment?.AverageVolume),
+                marketCap = enrichment?.MarketCapDisplay ?? "N/A",
+                peRatio = enrichment?.TrailingPe,
+                week52High = enrichment?.FiftyTwoWeekHigh ?? histHigh,
+                week52Low = enrichment?.FiftyTwoWeekLow ?? histLow,
+                dividend = enrichment?.DividendDisplay ?? "N/A",
+                beta = enrichment?.Beta ?? 1m
+            },
+            confidenceScore = confidence?.ConfidenceValue ?? 0f,
+            stabilityScore,
+            volatilityAnnualizedPercent = volatilityPct,
+            sentiment = new
+            {
+                bullish,
+                bearish,
+                neutral = neutralCount,
+                score = sentimentScore01,
+                mentions = sentiments.Count,
+                trending = sentiments.Count >= 20
+            },
+            news = newsItems
         });
+    }
+
+    private const string SentimentSourceSeparator = "\u2016"; // ‖
+
+    private static string DetailChannelFromSource(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return "News";
+        }
+
+        var i = source.IndexOf(SentimentSourceSeparator, StringComparison.Ordinal);
+        return i >= 0 ? source[..i].Trim() : "News";
+    }
+
+    private static string DetailHeadlineFromSource(string? source, string symbolFallback)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return $"{symbolFallback} headline";
+        }
+
+        var i = source.IndexOf(SentimentSourceSeparator, StringComparison.Ordinal);
+        if (i >= 0)
+        {
+            var headline = source[(i + 1)..].Trim();
+            return string.IsNullOrEmpty(headline) ? symbolFallback : headline;
+        }
+
+        if (source.StartsWith("Reddit:", StringComparison.OrdinalIgnoreCase))
+        {
+            var h = source["Reddit:".Length..].Trim();
+            return string.IsNullOrEmpty(h) ? "Reddit discussion" : h;
+        }
+
+        return source.Length > 180 ? source[..180] + "…" : source;
     }
 
     // GET: api/Stock/{symbol}/chart?range={range}
@@ -581,7 +822,14 @@ public class StockController : ControllerBase
         if (stock == null)
             return NotFound(new { message = "Stock not found." });
 
-        var cutoff = range switch
+        var rangeKey = (range ?? "1M").Trim().ToUpperInvariant();
+        rangeKey = rangeKey switch
+        {
+            "1D" or "1W" or "1M" or "3M" or "1Y" or "ALL" => rangeKey,
+            _ => "1M"
+        };
+
+        var cutoff = rangeKey switch
         {
             "1D"  => DateTime.UtcNow.AddHours(-24),
             "1W"  => DateTime.UtcNow.AddDays(-7),
@@ -592,7 +840,7 @@ public class StockController : ControllerBase
             _     => DateTime.UtcNow.AddDays(-30)
         };
 
-        var labelFormat = range switch
+        var labelFormat = rangeKey switch
         {
             "1D" => "HH:mm",
             "1W" => "ddd dd",
@@ -607,12 +855,13 @@ public class StockController : ControllerBase
             .Select(p => (p.Price, p.RecordedAt))
             .ToList();
 
-        if (points.Count < 8)
+        var needYahoo = points.Count == 0 || ShouldPreferYahooChart(rangeKey, points);
+        if (needYahoo)
         {
-            var fallbackPoints = await FetchYahooChartPointsAsync(stock.Symbol, range);
-            if (fallbackPoints.Count > points.Count)
+            var yahooPts = await FetchYahooChartPointsAsync(stock.Symbol, rangeKey);
+            if (yahooPts.Count > 0)
             {
-                points = fallbackPoints;
+                points = yahooPts;
             }
         }
 
@@ -628,12 +877,54 @@ public class StockController : ControllerBase
 
         return Ok(new
         {
-            range = range.ToUpperInvariant(),
+            range = rangeKey,
             from,
             to,
-            retrievedAt = to ?? DateTime.UtcNow,
+            retrievedAt = to,
             points = result
         });
+    }
+
+    /// <summary>
+    /// DB ingestion often produces only a few recent dots — long ranges (1M–1Y) then look identical.
+    /// Prefer Yahoo when we do not have enough time coverage or bars for the selected window.
+    /// </summary>
+    private static bool ShouldPreferYahooChart(string rangeKey, IReadOnlyList<(decimal Price, DateTime RecordedAt)> dbPoints)
+    {
+        if (dbPoints.Count == 0)
+        {
+            return true;
+        }
+
+        var span = dbPoints[^1].RecordedAt - dbPoints[0].RecordedAt;
+        var target = rangeKey switch
+        {
+            "1D" => TimeSpan.FromHours(20),
+            "1W" => TimeSpan.FromDays(5),
+            "1M" => TimeSpan.FromDays(18),
+            "3M" => TimeSpan.FromDays(50),
+            "1Y" => TimeSpan.FromDays(200),
+            "ALL" => TimeSpan.FromDays(365 * 3),
+            _ => TimeSpan.FromDays(18)
+        };
+
+        var minBars = rangeKey switch
+        {
+            "1D" => 12,
+            "1W" => 8,
+            "1M" => 12,
+            "3M" => 14,
+            "1Y" => 18,
+            "ALL" => 20,
+            _ => 10
+        };
+
+        if (dbPoints.Count < minBars)
+        {
+            return true;
+        }
+
+        return span < target;
     }
 
     private async Task<List<(decimal Price, DateTime RecordedAt)>> FetchYahooChartPointsAsync(string symbol, string range)
@@ -651,7 +942,7 @@ public class StockController : ControllerBase
                 _ => ("1mo", "1d"),
             };
 
-            var client = _httpClientFactory.CreateClient();
+            var client = _httpClientFactory.CreateClient(StockMarketDataService.YahooHttpClientName);
             var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(symbol)}?range={yahooRange}&interval={interval}";
             using var response = await client.GetAsync(url);
             if (!response.IsSuccessStatusCode)
@@ -691,18 +982,46 @@ public class StockController : ControllerBase
 
             var items = new List<(decimal Price, DateTime RecordedAt)>();
             var n = Math.Min(tsArray.GetArrayLength(), closeArray.GetArrayLength());
+            decimal? lastClose = null;
             for (var i = 0; i < n; i++)
             {
                 var close = closeArray[i];
                 var ts = tsArray[i];
-                if (close.ValueKind != JsonValueKind.Number || ts.ValueKind != JsonValueKind.Number)
+                if (ts.ValueKind != JsonValueKind.Number)
                 {
                     continue;
                 }
 
-                var price = close.TryGetDecimal(out var d) ? d : (decimal)close.GetDouble();
-                var unix = ts.TryGetInt64(out var t) ? t : (long)ts.GetDouble();
-                if (price <= 0m || unix <= 0)
+                decimal price;
+                if (close.ValueKind == JsonValueKind.Null || close.ValueKind == JsonValueKind.Undefined)
+                {
+                    if (lastClose is null)
+                    {
+                        continue;
+                    }
+
+                    price = lastClose.Value;
+                }
+                else if (close.ValueKind == JsonValueKind.Number)
+                {
+                    price = close.TryGetDecimal(out var d) ? d : (decimal)close.GetDouble();
+                    if (price > 0m)
+                    {
+                        lastClose = price;
+                    }
+                }
+                else
+                {
+                    continue;
+                }
+
+                if (price <= 0m)
+                {
+                    continue;
+                }
+
+                var unix = ts.TryGetInt64(out var ut) ? ut : (long)ts.GetDouble();
+                if (unix <= 0)
                 {
                     continue;
                 }

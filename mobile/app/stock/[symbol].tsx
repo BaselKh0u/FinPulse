@@ -195,9 +195,14 @@ export default function StockDetailScreen() {
   }, [chartFrom, chartTo, selectedRange]);
 
   const retrievedText = useMemo(() => {
-    if (!chartRetrievedAt) return null;
-    return `Last retrieved ${timeAgo(chartRetrievedAt)}`;
-  }, [chartRetrievedAt]);
+    if (!chartRetrievedAt || chartData.length < 2) return null;
+    return `Chart · ${timeAgo(chartRetrievedAt)}`;
+  }, [chartRetrievedAt, chartData.length]);
+
+  const priceSnapshotText = useMemo(() => {
+    if (!details?.lastPriceUpdatedAt) return null;
+    return `Quote snapshot · ${timeAgo(details.lastPriceUpdatedAt)}`;
+  }, [details?.lastPriceUpdatedAt]);
 
   if (loading) {
     return (
@@ -308,12 +313,15 @@ export default function StockDetailScreen() {
               </Text>
             </View>
           </View>
+          {priceSnapshotText ? (
+            <Text style={styles.snapshotMeta}>{priceSnapshotText}</Text>
+          ) : null}
         </View>
 
         <View style={styles.chartCard}>
           {chartData.length >= 2 ? (
             <LineChart
-              key={`${selectedRange}-${chartData.length}`}
+              key={`${selectedRange}-${chartFrom ?? ""}-${chartTo ?? ""}-${chartData.length}-${chartData[0] ?? 0}-${chartData[chartData.length - 1] ?? 0}`}
               data={{
                 labels: [],
                 datasets: [{ data: chartData, color: () => priceColor, strokeWidth: 2.5 }],
@@ -520,6 +528,7 @@ const createStyles = () => StyleSheet.create({
   rangeTextActive: { color: Colors.textPrimary, fontFamily: Fonts.bold },
   rangeMeta: { marginTop: 10, fontSize: 12, color: Colors.textSecondary, fontFamily: Fonts.medium },
   rangeMetaMuted: { marginTop: 2, fontSize: 11, color: Colors.textTertiary, fontFamily: Fonts.medium },
+  snapshotMeta: { marginTop: 8, fontSize: 12, color: Colors.textTertiary, fontFamily: Fonts.medium },
 
   actionsRow: { flexDirection: "row", gap: 12, marginTop: 20 },
   actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, borderRadius: 14 },

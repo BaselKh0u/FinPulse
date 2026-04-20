@@ -1,6 +1,18 @@
 import { apiRequest, USE_MOCK } from "./api";
 import { Stock, StockDetails } from "../models/Stock";
 
+function safeNum(v: unknown, fallback: number): number {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeDividendDisplay(v: unknown): string {
+  if (typeof v !== "string") return "No dividend";
+  const trimmed = v.trim();
+  if (!trimmed || /^n\/?a$/i.test(trimmed)) return "No dividend";
+  return trimmed;
+}
+
 let mockStocks: Stock[] = [
   {
     symbol: "AAPL",
@@ -32,14 +44,16 @@ export async function getStocks(): Promise<Stock[]> {
     symbol: string;
     companyName?: string;
     price?: number;
+    change?: number;
+    changePercent?: number;
   }>>("/stock");
   return rows.map((row) => ({
     stockId: row.stockId,
     symbol: row.symbol,
     name: row.companyName ?? row.symbol,
     price: row.price ?? 0,
-    change: 0,
-    changePercent: 0,
+    change: row.change ?? 0,
+    changePercent: row.changePercent ?? 0,
   }));
 }
 
@@ -191,16 +205,67 @@ export async function getStockDetails(symbol: string): Promise<StockDetails> {
     stockId: number;
     symbol: string;
     companyName?: string;
+    companyDescription?: string;
     sector?: string;
+    industry?: string;
+    employeesDisplay?: string;
+    headquartersDisplay?: string;
     latestPrice?: number;
+    lastRetrievedAt?: string;
     priceHistory?: Array<{ price: number }>;
+    keyStats?: {
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume?: string;
+      avgVolume?: string;
+      marketCap?: string;
+      peRatio?: number | null;
+      week52High?: number;
+      week52Low?: number;
+      dividend?: string;
+      beta?: number;
+    };
+    confidenceScore?: number;
+    stabilityScore?: number;
+    volatilityAnnualizedPercent?: number;
+    sentiment?: {
+      bullish: number;
+      bearish: number;
+      neutral: number;
+      score: number;
+      mentions: number;
+      trending: boolean;
+    };
+    news?: Array<{
+      id: string;
+      title: string;
+      summary?: string;
+      source: string;
+      publishedAt: string;
+      sentiment: "positive" | "neutral" | "negative";
+      sentimentScore: number;
+      url: string;
+    }>;
   }>(`/stock/${symbol}/details`);
 
-  const history = dto.priceHistory?.map((p) => p.price) ?? [];
+  const history = (dto.priceHistory ?? []).map((p) => p.price);
   const latestPrice = dto.latestPrice ?? history.at(-1) ?? 0;
   const firstPrice = history[0] ?? latestPrice;
   const change = latestPrice - firstPrice;
   const changePercent = firstPrice ? (change / firstPrice) * 100 : 0;
+
+  const vol = dto.volatilityAnnualizedPercent ?? 0;
+  const sens = dto.sentiment;
+  const ks = dto.keyStats;
+
+  const description =
+    typeof dto.companyDescription === "string" && dto.companyDescription.trim()
+      ? dto.companyDescription
+      : vol > 0
+        ? `Annualized historical volatility (from recent prices): ~${vol.toFixed(1)}%.`
+        : "Price and sentiment data are sourced from your FinPulse backend.";
 
   return {
     stockId: dto.stockId,
@@ -209,28 +274,63 @@ export async function getStockDetails(symbol: string): Promise<StockDetails> {
     price: latestPrice,
     change,
     changePercent,
-    description: "Detailed company information will be available when connected to enriched backend data.",
+    lastPriceUpdatedAt: typeof dto.lastRetrievedAt === "string" ? dto.lastRetrievedAt : undefined,
+    description,
     sector: dto.sector ?? "N/A",
-    industry: "N/A",
-    employees: "N/A",
-    headquarters: "N/A",
-    stabilityScore: 50,
-    keyStats: {
-      open: firstPrice,
-      high: history.length ? Math.max(...history) : latestPrice,
-      low: history.length ? Math.min(...history) : latestPrice,
-      close: latestPrice,
-      volume: "N/A",
-      avgVolume: "N/A",
-      marketCap: "N/A",
-      peRatio: null,
-      week52High: history.length ? Math.max(...history) : latestPrice,
-      week52Low: history.length ? Math.min(...history) : latestPrice,
-      dividend: "N/A",
-      beta: 1.0,
-    },
-    sentiment: { bullish: 33, bearish: 33, neutral: 34, score: 0, mentions: 0, trending: false },
-    news: [],
+    industry: dto.industry ?? "N/A",
+    employees: dto.employeesDisplay ?? "N/A",
+    headquarters: dto.headquartersDisplay ?? "N/A",
+    stabilityScore: dto.stabilityScore ?? 50,
+    confidenceScore:
+      dto.confidenceScore !== undefined ? dto.confidenceScore : undefined,
+    keyStats: ks
+      ? {
+          open: safeNum(ks.open, firstPrice),
+          high: safeNum(ks.high, history.length ? Math.max(...history) : latestPrice),
+          low: safeNum(ks.low, history.length ? Math.min(...history) : latestPrice),
+          close: safeNum(ks.close, latestPrice),
+          volume: ks.volume ?? "N/A",
+          avgVolume: ks.avgVolume ?? "N/A",
+          marketCap: ks.marketCap ?? "N/A",
+          peRatio: ks.peRatio ?? null,
+          week52High: safeNum(ks.week52High, history.length ? Math.max(...history) : latestPrice),
+          week52Low: safeNum(ks.week52Low, history.length ? Math.min(...history) : latestPrice),
+          dividend: normalizeDividendDisplay(ks.dividend),
+          beta: ks.beta !== undefined && ks.beta !== null ? Number(ks.beta) : 1,
+        }
+      : {
+          open: firstPrice,
+          high: history.length ? Math.max(...history) : latestPrice,
+          low: history.length ? Math.min(...history) : latestPrice,
+          close: latestPrice,
+          volume: "N/A",
+          avgVolume: "N/A",
+          marketCap: "N/A",
+          peRatio: null,
+          week52High: history.length ? Math.max(...history) : latestPrice,
+          week52Low: history.length ? Math.min(...history) : latestPrice,
+          dividend: "No dividend",
+          beta: 1.0,
+        },
+    sentiment: sens
+      ? {
+          bullish: sens.bullish,
+          bearish: sens.bearish,
+          neutral: sens.neutral,
+          score: sens.score,
+          mentions: sens.mentions,
+          trending: sens.trending,
+        }
+      : { bullish: 33, bearish: 33, neutral: 34, score: 0, mentions: 0, trending: false },
+    news: (dto.news ?? []).map((n) => ({
+      id: n.id,
+      title: n.title,
+      source: n.source,
+      publishedAt: n.publishedAt,
+      url: n.url,
+      sentiment: n.sentiment,
+      summary: n.summary ?? n.title,
+    })),
     chartData: history.length ? history : [latestPrice],
   };
 }
@@ -253,13 +353,14 @@ export async function getStockHistory(symbol: string, range: string): Promise<St
     };
   }
 
+  const rangeParam = String(range ?? "1M").trim().toUpperCase();
   const payload = await apiRequest<{
     from?: string;
     to?: string;
     retrievedAt?: string;
     points: Array<{ value: number; recordedAt?: string }>;
   }>(
-    `/stock/${symbol}/chart?range=${encodeURIComponent(range)}`
+    `/stock/${symbol}/chart?range=${encodeURIComponent(rangeParam)}`
   );
   return {
     values: (payload.points ?? [])

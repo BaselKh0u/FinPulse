@@ -56,6 +56,133 @@ export interface MarketData {
   retrievedAt?: string;
 }
 
+function mapMoodLabel(score: number): MarketMood["label"] {
+  if (score >= 0.85) return "Extreme Greed";
+  if (score >= 0.65) return "Greed";
+  if (score >= 0.35) return "Neutral";
+  if (score >= 0.15) return "Fear";
+  return "Extreme Fear";
+}
+
+function normalizeTrendingSentimentLabel(value: unknown): TrendingStock["sentimentLabel"] {
+  const s = String(value ?? "neutral").toLowerCase();
+  if (s === "bullish") return "bullish";
+  if (s === "bearish") return "bearish";
+  return "neutral";
+}
+
+/** Maps backend /market/overview (camelCase JSON) into the shape the Market screen expects. */
+export function normalizeMarketPayload(raw: unknown): MarketData {
+  const r = raw as Record<string, unknown>;
+  const moodRaw = (r?.mood ?? {}) as Record<string, unknown>;
+  const score = typeof moodRaw.score === "number" ? moodRaw.score : Number(moodRaw.score ?? 0.5);
+  const change =
+    moodRaw.change === undefined || moodRaw.change === null
+      ? 0
+      : typeof moodRaw.change === "number"
+        ? moodRaw.change
+        : Number(moodRaw.change);
+  const updatedAt =
+    typeof moodRaw.updatedAt === "string"
+      ? moodRaw.updatedAt
+      : new Date().toISOString();
+  const apiLabel = moodRaw.label;
+  const label: MarketMood["label"] =
+    typeof apiLabel === "string" &&
+    ["Extreme Fear", "Fear", "Neutral", "Greed", "Extreme Greed"].includes(apiLabel)
+      ? (apiLabel as MarketMood["label"])
+      : mapMoodLabel(Number.isFinite(score) ? score : 0.5);
+
+  const trendingRaw = Array.isArray(r.trending) ? r.trending : [];
+  const trending: TrendingStock[] = trendingRaw.map((t: Record<string, unknown>) => ({
+    symbol: String(t.symbol ?? ""),
+    name: String(t.name ?? t.companyName ?? t.symbol ?? ""),
+    price: Number(t.price ?? 0),
+    changePercent: Number(t.changePercent ?? 0),
+    mentions: Number(t.mentions ?? 0),
+    sentimentScore: Number(t.sentimentScore ?? 0),
+    sentimentLabel: normalizeTrendingSentimentLabel(t.sentimentLabel),
+  }));
+
+  const sourcesRaw = Array.isArray(r.sources) ? r.sources : [];
+  const sources: SourceSentiment[] = sourcesRaw.map((s: Record<string, unknown>) => ({
+    source: String(s.source ?? ""),
+    icon: String(s.icon ?? "newspaper-outline"),
+    positive: Number(s.positive ?? 0),
+    neutral: Number(s.neutral ?? 0),
+    negative: Number(s.negative ?? 0),
+    totalPosts: Number(s.totalPosts ?? 0),
+  }));
+
+  const moversRaw = Array.isArray(r.movers) ? r.movers : [];
+  const movers: SentimentMover[] = moversRaw.map((m: Record<string, unknown>) => {
+    const direction = m.direction === "down" ? "down" : "up";
+    const currentScore = Number(m.currentScore ?? 0);
+    const previousScore =
+      m.previousScore !== undefined && m.previousScore !== null
+        ? Number(m.previousScore)
+        : direction === "up"
+          ? Math.max(-1, Math.min(1, currentScore - 0.08))
+          : Math.max(-1, Math.min(1, currentScore + 0.08));
+    return {
+      symbol: String(m.symbol ?? ""),
+      name: String(m.name ?? m.symbol ?? ""),
+      previousScore,
+      currentScore,
+      change: Math.abs(currentScore - previousScore),
+      direction,
+    };
+  });
+
+  const newsRaw = Array.isArray(r.news) ? r.news : [];
+  const news: MarketNewsItem[] = newsRaw.map((n: Record<string, unknown>, i: number) => {
+    let publishedAt = "";
+    const p = n.publishedAt;
+    if (typeof p === "string") publishedAt = p;
+    else if (p instanceof Date) publishedAt = p.toISOString();
+    else if (p) publishedAt = new Date(String(p)).toISOString();
+    else publishedAt = new Date().toISOString();
+
+    return {
+      id: String(n.id ?? `news-${i}`),
+      title: String(n.title ?? ""),
+      summary: String(n.summary ?? ""),
+      source: String(n.source ?? ""),
+      publishedAt,
+      sentiment:
+        n.sentiment === "positive" || n.sentiment === "negative" || n.sentiment === "neutral"
+          ? n.sentiment
+          : "neutral",
+      sentimentScore: Number(n.sentimentScore ?? 0),
+      relatedSymbols: Array.isArray(n.relatedSymbols)
+        ? (n.relatedSymbols as unknown[]).map(String)
+        : [],
+      url: String(n.url ?? "#"),
+    };
+  });
+
+  const retrievedAt =
+    typeof r.retrievedAt === "string"
+      ? r.retrievedAt
+      : r.retrievedAt != null
+        ? new Date(r.retrievedAt as string | number).toISOString()
+        : undefined;
+
+  return {
+    mood: {
+      score: Number.isFinite(score) ? score : 0.5,
+      label,
+      change: Number.isFinite(change) ? change : 0,
+      updatedAt,
+    },
+    trending,
+    sources,
+    movers,
+    news,
+    retrievedAt,
+  };
+}
+
 const mockMarketData: MarketData = {
   mood: {
     score: 0.68,
@@ -132,7 +259,8 @@ const mockMarketData: MarketData = {
 
 export async function getMarketData(): Promise<MarketData> {
   if (USE_MOCK) return JSON.parse(JSON.stringify(mockMarketData));
-  return apiRequest<MarketData>("/market/overview");
+  const raw = await apiRequest<unknown>("/market/overview");
+  return normalizeMarketPayload(raw);
 }
 
 export async function getMarketNews(page = 1): Promise<MarketNewsItem[]> {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -96,6 +96,7 @@ export default function ProfileScreen() {
   const [refreshModal, setRefreshModal] = useState(false);
   const [biometricBusy, setBiometricBusy] = useState(false);
   const [ingestion, setIngestion] = useState<DataIngestionConfig | null>(null);
+  const hasLoadedProfileRef = useRef(false);
 
   const editScrollRef = useRef<ScrollView>(null);
 
@@ -107,21 +108,29 @@ export default function ProfileScreen() {
     setGlobalAvatar(u.avatarUrl ?? null);
   }, []);
 
-  useEffect(() => {
-    getDataIngestionConfig().then(setIngestion);
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try { setLoading(true); await load(); } finally { setLoading(false); }
-    })();
-  }, [load]);
-
   useFocusEffect(
     useCallback(() => {
-      load();
-      getDataIngestionConfig().then(setIngestion);
-    }, [load]),
+      let isActive = true;
+      void (async () => {
+        if (!hasLoadedProfileRef.current) {
+          setLoading(true);
+        }
+        try {
+          const [_, cfg] = await Promise.all([load(), getDataIngestionConfig()]);
+          if (isActive) {
+            setIngestion(cfg);
+          }
+          hasLoadedProfileRef.current = true;
+        } finally {
+          if (isActive) {
+            setLoading(false);
+          }
+        }
+      })();
+      return () => {
+        isActive = false;
+      };
+    }, [load])
   );
 
   async function applyAvatar(nextUri: string) {
@@ -369,7 +378,14 @@ export default function ProfileScreen() {
         <View style={styles.userCard}>
           <Pressable onPress={avatarSaving ? undefined : pickAvatar} style={[styles.avatarWrap, avatarSaving && { opacity: 0.7 }]}>
             {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              <Image
+                source={{ uri: avatarUri }}
+                style={styles.avatarImage}
+                onError={() => {
+                  setAvatarUri(null);
+                  setGlobalAvatar(null);
+                }}
+              />
             ) : (
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>{initials}</Text>
@@ -516,7 +532,9 @@ export default function ProfileScreen() {
                   <Text style={styles.ingestionTitle}>Server data gathering</Text>
                 </View>
                 <Text style={styles.ingestionLine}>
-                  Full refresh cycle: every {ingestion.pollingIntervalMinutes} min
+                  {ingestion.runExtendedIngestionJob === false
+                    ? `Quotes only: every ${ingestion.quotePollingIntervalMinutes ?? ingestion.pollingIntervalMinutes} min`
+                    : `Quotes ~${ingestion.quotePollingIntervalMinutes ?? ingestion.pollingIntervalMinutes} min · News/social ~${ingestion.extendedPollingIntervalMinutes ?? ingestion.pollingIntervalMinutes} min`}
                 </Text>
                 <Text style={styles.ingestionLine}>
                   Between symbols: {ingestion.delayBetweenSymbolIngestionSeconds}s · Between Alpha Vantage calls:{" "}

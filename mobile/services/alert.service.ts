@@ -183,3 +183,29 @@ export async function fireTestAlert(alertId?: string): Promise<void> {
     }),
   });
 }
+
+export type AlertEvent = {
+  alertEventId: number;
+  alertId: number;
+  userId: number;
+  stockId: number;
+  conditionType: string | number;
+  triggerValue?: number | null;
+  details?: string;
+  createdAt: string;
+  isRead: boolean;
+};
+
+export async function getUnreadAlertEvents(userId: number): Promise<AlertEvent[]> {
+  if (USE_MOCK || userId <= 0) {
+    return [];
+  }
+  return apiRequest<AlertEvent[]>(`/alerts/events/${userId}?unreadOnly=true`);
+}
+
+export async function markAlertEventAsRead(alertEventId: number): Promise<void> {
+  if (USE_MOCK || alertEventId <= 0) {
+    return;
+  }
+  await apiRequest<void>(`/alerts/events/${alertEventId}/read`, { method: "POST" });
+}

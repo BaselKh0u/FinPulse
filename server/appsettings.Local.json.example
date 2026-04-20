@@ -1,0 +1,27 @@
+{
+  "AlphaVantage": {
+    "ApiKey": "",
+    "ApiKeys": [],
+    "UseAlphaVantageIngestion": false
+  },
+  "SendGrid": {
+    "ApiKey": ""
+  },
+  "SocialApis": {
+    "Finnhub": {
+      "ApiKey": ""
+    },
+    "Reddit": {
+      "ClientId": "",
+      "ClientSecret": "",
+      "RefreshToken": "",
+      "UserAgent": "FinPulse-ingestion/1.0 by FinPulse https://github.com/your-org/FinPulse"
+    },
+    "X": {
+      "BearerToken": ""
+    },
+    "Facebook": {
+      "AccessToken": ""
+    }
+  }
+}
