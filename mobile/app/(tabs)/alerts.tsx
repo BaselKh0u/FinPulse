@@ -340,6 +340,18 @@ function SwipeableAlertCard({
               <Text style={styles.description}>{item.description} · {timeAgo(item.createdAt)}</Text>
             </View>
           </View>
+          <Pressable
+            onPress={() =>
+              Alert.alert("Delete Alert", `Remove ${item.symbol} ${item.description}?`, [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", style: "destructive", onPress: onDelete },
+              ])
+            }
+            hitSlop={8}
+            style={({ pressed }) => [styles.inlineDeleteBtn, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="trash-outline" size={18} color={Colors.danger} />
+          </Pressable>
           <Switch
             value={item.isActive}
             onValueChange={(val) => onToggle(item.id, val)}
@@ -403,6 +415,11 @@ const createStyles = () => StyleSheet.create({
   typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   typeText: { fontSize: 10, fontFamily: Fonts.bold, letterSpacing: 0.5 },
   description: { marginTop: 4, fontSize: 13, color: Colors.textSecondary, fontFamily: Fonts.medium },
+  inlineDeleteBtn: {
+    width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center",
+    marginRight: 10, backgroundColor: Colors.dangerLight,
+  },
+
   swipeRow: {
     marginBottom: 10,
     borderRadius: 18,
