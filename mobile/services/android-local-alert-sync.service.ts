@@ -5,13 +5,17 @@ import {
   markAlertEventAsRead,
 } from "@/services/alert.service";
 import { sendLocalNotification } from "@/services/notification.service";
-import { getPreferences } from "@/services/user.service";
 
 const POLL_MS = 25000;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let syncInFlight = false;
 const seenEventIds = new Set<number>();
+let warnedAuthIssue = false;
+
+function isAuthFailure(error: unknown): boolean {
+  return error instanceof Error && /session expired|invalid email or password|401|permission/i.test(error.message);
+}
 
 function titleFor(symbol: string, conditionType: string | number): string {
   const cond = String(conditionType).toLowerCase();
@@ -30,11 +34,6 @@ async function syncOnce() {
   }
   syncInFlight = true;
   try {
-    const prefs = await getPreferences().catch(() => null);
-    if (prefs?.pushNotifications === false) {
-      return;
-    }
-
     const userId = Number((await getStoredUserId()) ?? 0);
     if (userId <= 0) {
       return;
@@ -76,6 +75,14 @@ async function syncOnce() {
       });
     }
   } catch (error) {
+    if (isAuthFailure(error)) {
+      if (!warnedAuthIssue) {
+        warnedAuthIssue = true;
+        console.warn("Android local alert sync paused until you sign in again.");
+      }
+      stopAndroidLocalAlertSync();
+      return;
+    }
     console.warn("Android local alert sync failed:", error);
   } finally {
     syncInFlight = false;
@@ -98,5 +105,6 @@ export function stopAndroidLocalAlertSync() {
     timer = null;
   }
   seenEventIds.clear();
+  warnedAuthIssue = false;
 }
 
