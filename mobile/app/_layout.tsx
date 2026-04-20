@@ -1,7 +1,8 @@
-import { Stack, useRouter } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
 import * as SplashScreen from "expo-splash-screen";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { LogBox } from "react-native";
 import {
   registerForPushNotifications,
   addNotificationResponseListener,
@@ -23,6 +24,7 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const router = useRouter();
+  const segments = useSegments();
   const notificationListener = useRef<{ remove: () => void }>();
   const [isDark, setIsDark] = useState(false);
 
@@ -42,23 +44,48 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
+    if (shouldUseAndroidExpoGoLocalAlertFallback()) {
+      LogBox.ignoreLogs([
+        "expo-notifications: Android Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
+        "`expo-notifications` functionality is not fully supported in Expo Go",
+      ]);
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        const first = args[0];
+        const text = typeof first === "string" ? first : first instanceof Error ? first.message : String(first ?? "");
+        if (text.includes("expo-notifications: Android Push notifications")) {
+          return;
+        }
+        originalError(...args);
+      };
+      return () => {
+        console.error = originalError;
+      };
+    }
+  }, []);
+
+  useEffect(() => {
     if (fontsLoaded) SplashScreen.hideAsync();
   }, [fontsLoaded]);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      await registerForPushNotifications({ silent: true });
-      const sub = await addNotificationResponseListener((response) => {
-        const data = response.notification.request.content.data as { symbol?: string };
-        if (data?.symbol) {
-          router.push(`/stock/${data.symbol}`);
+      try {
+        await registerForPushNotifications({ silent: true });
+        const sub = await addNotificationResponseListener((response) => {
+          const data = response.notification.request.content.data as { symbol?: string };
+          if (data?.symbol) {
+            router.push(`/stock/${data.symbol}`);
+          }
+        });
+        if (!cancelled) {
+          notificationListener.current = sub;
+        } else {
+          sub.remove();
         }
-      });
-      if (!cancelled) {
-        notificationListener.current = sub;
-      } else {
-        sub.remove();
+      } catch {
+        // avoid unhandled promise warnings during startup
       }
     })();
 
@@ -100,6 +127,26 @@ export default function RootLayout() {
       unsub();
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const enforceAuthRoute = async () => {
+      const token = await getAccessToken();
+      if (!alive) return;
+      const inAuth = segments[0] === "auth";
+      if (!token && !inAuth) {
+        router.replace("/auth/login");
+      }
+    };
+    void enforceAuthRoute();
+    const unsub = subscribeSessionChange(() => {
+      void enforceAuthRoute();
+    });
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [router, segments]);
 
   useEffect(() => {
     let alive = true;

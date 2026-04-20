@@ -51,6 +51,14 @@ export type RegisterPushOptions = {
 export async function registerForPushNotifications(
   options: RegisterPushOptions = {}
 ): Promise<string | null> {
+  if (isAndroidExpoGo()) {
+    if (!warnedAndroidExpoGoPush) {
+      warnedAndroidExpoGoPush = true;
+      console.warn("Expo Go on Android does not support remote push tokens. Using local alert fallback.");
+    }
+    return null;
+  }
+
   const silent = options.silent === true;
 
   if (!Device.isDevice) {
@@ -84,14 +92,6 @@ export async function registerForPushNotifications(
       lightColor: "#2C66FF",
       sound: "default",
     });
-  }
-
-  if (isAndroidExpoGo()) {
-    if (!warnedAndroidExpoGoPush) {
-      warnedAndroidExpoGoPush = true;
-      console.warn("Expo Go on Android does not support remote push tokens. Using local alert fallback.");
-    }
-    return null;
   }
 
   try {

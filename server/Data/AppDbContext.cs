@@ -59,6 +59,10 @@ namespace Server.Data
                 .HasColumnType("decimal(18,2)");
 
             modelBuilder.Entity<AlertEvent>()
+                .Property(ae => ae.ConditionType)
+                .HasConversion<string>();
+
+            modelBuilder.Entity<AlertEvent>()
                 .Property(ae => ae.TriggerValue)
                 .HasColumnType("decimal(18,2)");
 
