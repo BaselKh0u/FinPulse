@@ -55,7 +55,7 @@ builder.Services.AddCors(options =>
     options.AddPolicy("FrontendDev", policy =>
     {
         policy
-            .WithOrigins("http://localhost:8081", "http://127.0.0.1:8081")
+            .AllowAnyOrigin()
             .AllowAnyHeader()
             .AllowAnyMethod();
     });
@@ -81,7 +81,20 @@ builder.Services.AddSingleton<SymbolIngestionRotationState>();
 builder.Services.AddSingleton<AlphaVantageSymbolSearchThrottle>();
 builder.Services.AddHttpClient(nameof(RedditOAuthTokenProvider));
 builder.Services.AddSingleton<IRedditOAuthTokenProvider, RedditOAuthTokenProvider>();
-builder.Services.AddHttpClient<IStockIngestionService, AlphaVantageStockIngestionService>();
+builder.Services.AddHttpClient<IStockIngestionService, AlphaVantageStockIngestionService>(client =>
+{
+    client.DefaultRequestHeaders.UserAgent.ParseAdd(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
+    client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    client.Timeout = TimeSpan.FromSeconds(35);
+});
+builder.Services.AddHttpClient(VaderSentimentService.HttpClientName, client =>
+{
+    client.BaseAddress = new Uri(
+        builder.Configuration["SentimentService:BaseUrl"] ?? "http://localhost:8765");
+    client.Timeout = TimeSpan.FromSeconds(5); // fast fallback if Python isn't running
+});
+builder.Services.AddScoped<IVaderSentimentService, VaderSentimentService>();
 builder.Services.AddScoped<IAlertEvaluationService, AlertEvaluationService>();
 builder.Services.AddHostedService<StockQuoteIngestionJob>();
 var avSection = builder.Configuration.GetSection(AlphaVantageOptions.SectionName);
@@ -91,6 +104,7 @@ if (avSection.GetValue("RunExtendedIngestionJob", defaultValue: true))
 }
 
 builder.Services.AddHostedService<AlertTriggerJob>();
+builder.Services.AddHostedService<WatchlistRealtimeQuoteJob>();
 
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddScoped<EmailService>();

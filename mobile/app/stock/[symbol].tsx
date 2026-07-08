@@ -15,7 +15,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { LineChart } from "react-native-chart-kit";
 import * as Haptics from "expo-haptics";
 import { StockDetails, StockNewsItem } from "@/models/Stock";
-import { getStockDetails, getStocks, addStock, removeStock, getStockHistory } from "@/services/stock.service";
+import { getStockDetails, getStocks, addStock, removeStock, getStockHistory, exportStockToCsv } from "@/services/stock.service";
 import { getAlerts, deleteAlert } from "@/services/alert.service";
 import { Colors, Fonts } from "@/theme";
 import { useTheme } from "@/stores/theme.store";
@@ -62,6 +62,7 @@ export default function StockDetailScreen() {
   const [hasAlert, setHasAlert] = useState(false);
   const [alertId, setAlertId] = useState<string | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -167,6 +168,18 @@ export default function StockDetailScreen() {
         pathname: "/create-alert",
         params: { symbol: details.symbol, stockName: details.name, stockPrice: String(details.price) },
       });
+    }
+  }
+
+  async function handleExport() {
+    if (!details || exporting) return;
+    try {
+      setExporting(true);
+      await exportStockToCsv(details.symbol);
+    } catch (e) {
+      AlertDialog.alert("Export Failed", e instanceof Error ? e.message : "Could not export data.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -294,6 +307,13 @@ export default function StockDetailScreen() {
               name={hasAlert ? "notifications" : "notifications-outline"}
               size={24}
               color={hasAlert ? Colors.warning : Colors.textSecondary}
+            />
+          </Pressable>
+          <Pressable onPress={handleExport} hitSlop={8} style={({ pressed }) => pressed && { opacity: 0.7 }}>
+            <Ionicons
+              name={exporting ? "hourglass-outline" : "download-outline"}
+              size={24}
+              color={Colors.textSecondary}
             />
           </Pressable>
         </View>

@@ -28,6 +28,7 @@ namespace Server.Services
         private readonly SymbolIngestionRotationState _symbolRotation;
         private readonly IRedditOAuthTokenProvider _redditOAuth;
         private readonly string _redditUserAgent;
+        private readonly IVaderSentimentService _vader;
 
         public AlphaVantageStockIngestionService(
             HttpClient httpClient,
@@ -36,12 +37,14 @@ namespace Server.Services
             IConfiguration configuration,
             SymbolIngestionRotationState symbolRotation,
             IRedditOAuthTokenProvider redditOAuth,
+            IVaderSentimentService vader,
             ILogger<AlphaVantageStockIngestionService> logger)
         {
             _httpClient = httpClient;
             _dbContext = dbContext;
             _symbolRotation = symbolRotation;
             _redditOAuth = redditOAuth;
+            _vader = vader;
             _redditUserAgent = FirstNonEmpty(
                 configuration["SocialApis:Reddit:UserAgent"],
                 Environment.GetEnvironmentVariable("SocialApis__Reddit__UserAgent"),
@@ -497,7 +500,7 @@ namespace Server.Services
                         continue;
                     }
 
-                    var headlineScore = NewsSentimentScorer.ScoreText(headline);
+                    var headlineScore = await _vader.ScoreAsync(headline, cancellationToken);
                     var labelScore = NewsSentimentScorer.ScoreFromAlphaVantageLabel(overallLabel);
                     var blendedScore = Math.Clamp(
                         sentimentScore * 0.28m + headlineScore * 0.27m + labelScore * 0.45m,
@@ -558,7 +561,7 @@ namespace Server.Services
                             continue;
                         }
 
-                        var score = NewsSentimentScorer.ScoreText(title);
+                        var score = await _vader.ScoreAsync(title, cancellationToken);
 
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
@@ -701,7 +704,7 @@ namespace Server.Services
                         continue;
                     }
 
-                    var score = NewsSentimentScorer.ScoreText(headline);
+                    var score = await _vader.ScoreAsync(headline, cancellationToken);
                     _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                     {
                         StockId = stock.StockId,
@@ -760,7 +763,7 @@ namespace Server.Services
                             continue;
                         }
 
-                        var score = NewsSentimentScorer.ScoreText(title);
+                        var score = await _vader.ScoreAsync(title, cancellationToken);
 
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
@@ -870,7 +873,7 @@ namespace Server.Services
                             continue;
                         }
 
-                        var score = NewsSentimentScorer.ScoreText(title);
+                        var score = await _vader.ScoreAsync(title, cancellationToken);
 
                         _dbContext.SentimentAnalyses.Add(new SentimentAnalysis
                         {
@@ -1135,7 +1138,7 @@ namespace Server.Services
                 }
 
                 var lines = csv
-                    .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    .Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 if (lines.Length < 2)
                 {
                     return false;
@@ -1243,6 +1246,14 @@ namespace Server.Services
                     {
                         recordedAt = DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime;
                     }
+                }
+
+                var yahooExists = await _dbContext.PriceData
+                    .AnyAsync(p => p.StockId == stock.StockId && p.RecordedAt == recordedAt, cancellationToken);
+                if (yahooExists)
+                {
+                    _logger.LogDebug("Yahoo quote for {Symbol} at {RecordedAt} already exists, skipping", stock.Symbol, recordedAt);
+                    return true;
                 }
 
                 _dbContext.PriceData.Add(new PriceData

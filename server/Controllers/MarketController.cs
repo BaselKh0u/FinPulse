@@ -46,10 +46,10 @@ public class MarketController : ControllerBase
 
     // GET: api/Market/news?page=1
     [HttpGet("news")]
-    public IActionResult GetNews([FromQuery] int page = 1)
+    public async Task<IActionResult> GetNews([FromQuery] int page = 1)
     {
-        // TODO: Populate when partner connects the news API
-        return Ok(Array.Empty<object>());
+        var news = await BuildNewsAsync();
+        return Ok(news);
     }
 
     // --- private helpers ---

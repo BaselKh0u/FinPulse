@@ -16,7 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Swipeable } from "react-native-gesture-handler";
-import { getAlerts, toggleAlert, deleteAlert, fireTestAlert } from "@/services/alert.service";
+import { getAlerts, toggleAlert, deleteAlert } from "@/services/alert.service";
 import { Alert as AlertModel, AlertType, ALERT_TYPE_CONFIG } from "@/models/Alert";
 import { Colors, Fonts } from "@/theme";
 import { useTheme } from "@/stores/theme.store";
@@ -102,17 +102,6 @@ export default function AlertsScreen() {
       setAlerts((prev) => prev.filter((a) => a.id !== alert.id));
     } catch {
       Alert.alert("Error", "Failed to delete alert. Please try again.");
-    }
-  }
-
-  async function onTestAlert() {
-    try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const latest = filtered[0];
-      await fireTestAlert(latest?.id);
-      Alert.alert("Test sent", "A test alert event was created. Check your alert events feed.");
-    } catch (e) {
-      Alert.alert("Test failed", e instanceof Error ? e.message : "Couldn't create a test alert.");
     }
   }
 
@@ -210,14 +199,6 @@ export default function AlertsScreen() {
         <Ionicons name="add" size={22} color={Colors.white} />
         <Text style={styles.createBtnText}>Create New Alert</Text>
       </Pressable>
-      <Pressable
-        onPress={onTestAlert}
-        style={({ pressed }) => [styles.testBtn, pressed && { opacity: 0.85 }]}
-      >
-        <Ionicons name="flask-outline" size={20} color={Colors.accent} />
-        <Text style={styles.testBtnText}>Send Test Alert</Text>
-      </Pressable>
-
       {loading ? (
         <View style={styles.loadingWrap}><ActivityIndicator size="large" color={Colors.accent} /></View>
       ) : alerts.length === 0 ? (
@@ -371,13 +352,6 @@ const createStyles = () => StyleSheet.create({
     elevation: 4, marginBottom: 20,
   },
   createBtnText: { color: Colors.white, fontSize: 16, fontFamily: Fonts.bold },
-  testBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-    marginHorizontal: 20, height: 46, borderRadius: 14, backgroundColor: Colors.card,
-    borderWidth: 1.5, borderColor: Colors.border, marginBottom: 14,
-  },
-  testBtnText: { color: Colors.accent, fontSize: 15, fontFamily: Fonts.semiBold },
-
   sectionRow: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 20, marginBottom: 14,

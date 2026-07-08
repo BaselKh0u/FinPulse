@@ -16,12 +16,15 @@ public interface IStockMarketDataService
     Task RefreshQuoteIfStaleAsync(AppDbContext db, Stock stock, CancellationToken cancellationToken = default);
     Task<StockDetailEnrichment?> GetEnrichmentAsync(string symbol, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<WireNewsItem>> FetchFinnhubCompanyNewsAsync(string symbol, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<FinnhubSymbolMatch>> SearchSymbolsAsync(string query, CancellationToken cancellationToken = default);
 
     /// <summary>Yahoo v7 batch quotes for watchlist movers (regular session change / %).</summary>
     Task<IReadOnlyDictionary<string, QuoteTickerSnapshot>> GetYahooQuotesAsync(
         IEnumerable<string> symbols,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record FinnhubSymbolMatch(string Symbol, string Description, string Type);
 
 public sealed record WireNewsItem(string Title, DateTime PublishedAtUtc, string Source);
 
@@ -293,6 +296,43 @@ public sealed class StockMarketDataService : IStockMarketDataService
         {
             _logger.LogWarning(ex, "Finnhub company-news fetch failed for {Symbol}", sym);
             return Array.Empty<WireNewsItem>();
+        }
+    }
+
+    public async Task<IReadOnlyList<FinnhubSymbolMatch>> SearchSymbolsAsync(string query, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(_finnhubApiKey))
+            return Array.Empty<FinnhubSymbolMatch>();
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient(YahooHttpClientName);
+            var url = $"https://finnhub.io/api/v1/search?q={Uri.EscapeDataString(query)}&token={Uri.EscapeDataString(_finnhubApiKey)}";
+            using var response = await client.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode) return Array.Empty<FinnhubSymbolMatch>();
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!doc.RootElement.TryGetProperty("result", out var results) || results.ValueKind != JsonValueKind.Array)
+                return Array.Empty<FinnhubSymbolMatch>();
+
+            var list = new List<FinnhubSymbolMatch>();
+            foreach (var item in results.EnumerateArray().Take(15))
+            {
+                var symbol = item.TryGetProperty("displaySymbol", out var s) ? s.GetString()?.Trim() : null;
+                var desc = item.TryGetProperty("description", out var d) ? d.GetString()?.Trim() : null;
+                var type = item.TryGetProperty("type", out var t) ? t.GetString()?.Trim() : null;
+                if (string.IsNullOrWhiteSpace(symbol)) continue;
+                // Only include common stocks and ETFs traded on US exchanges
+                if (type is not ("Common Stock" or "ETP")) continue;
+                list.Add(new FinnhubSymbolMatch(symbol, desc ?? symbol, type ?? ""));
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Finnhub symbol search failed for query {Query}", query);
+            return Array.Empty<FinnhubSymbolMatch>();
         }
     }
 
