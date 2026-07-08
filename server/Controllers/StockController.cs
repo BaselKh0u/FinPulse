@@ -25,6 +25,7 @@ public class StockController : ControllerBase
     private readonly IServiceProvider _serviceProvider;
     private readonly AlphaVantageSymbolSearchThrottle _symbolSearchThrottle;
     private readonly IStockMarketDataService _marketData;
+    private readonly IVaderSentimentService _vader;
 
     public StockController(
         AppDbContext context,
@@ -34,7 +35,8 @@ public class StockController : ControllerBase
         ILogger<StockController> logger,
         IServiceProvider serviceProvider,
         AlphaVantageSymbolSearchThrottle symbolSearchThrottle,
-        IStockMarketDataService marketData)
+        IStockMarketDataService marketData,
+        IVaderSentimentService vader)
     {
         _context = context;
         _httpClientFactory = httpClientFactory;
@@ -48,6 +50,7 @@ public class StockController : ControllerBase
         _serviceProvider = serviceProvider;
         _symbolSearchThrottle = symbolSearchThrottle;
         _marketData = marketData;
+        _vader = vader;
     }
 
     private static string FormatCompactNumber(long? value)
@@ -197,9 +200,43 @@ public class StockController : ControllerBase
         var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol);
         if (stock == null)
         {
-            stock = new Stock { Symbol = symbol };
+            stock = new Stock { Symbol = symbol, CompanyName = symbol };
             _context.Stocks.Add(stock);
             await _context.SaveChangesAsync();
+
+            // Enrich company name/sector and fetch initial price in background
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var enrichment = await _marketData.GetEnrichmentAsync(symbol);
+                    if (enrichment != null)
+                    {
+                        using var scope = _serviceProvider.CreateScope();
+                        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var s = await db.Stocks.FirstOrDefaultAsync(x => x.Symbol == symbol);
+                        if (s != null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(enrichment.Sector))
+                                s.Sector = enrichment.Sector;
+                            if (enrichment.RegularMarketPrice > 0)
+                            {
+                                db.PriceData.Add(new PriceData
+                                {
+                                    StockId = s.StockId,
+                                    Price = enrichment.RegularMarketPrice.Value,
+                                    RecordedAt = DateTime.UtcNow
+                                });
+                            }
+                            await db.SaveChangesAsync();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Background enrichment failed for new symbol {Symbol}", symbol);
+                }
+            });
         }
 
         var alreadyInWatchlist = await _context.Watchlists
@@ -210,6 +247,54 @@ public class StockController : ControllerBase
 
         _context.Watchlists.Add(new Watchlist { UserId = userId, StockId = stock.StockId });
         await _context.SaveChangesAsync();
+
+        // Kick off news + sentiment ingestion for this symbol in the background
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var news = await _marketData.FetchFinnhubCompanyNewsAsync(symbol);
+                if (news.Count == 0) return;
+
+                using var scope = _serviceProvider.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var vader = scope.ServiceProvider.GetRequiredService<IVaderSentimentService>();
+
+                var freshStock = await db.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol);
+                if (freshStock is null) return;
+
+                int added = 0;
+                foreach (var item in news)
+                {
+                    var sep = AlphaVantageStockIngestionService.SourceChannelSeparator;
+                    var fullSource = $"{item.Source}{sep}{item.Title}";
+                    var exists = await db.SentimentAnalyses
+                        .AnyAsync(sa => sa.StockId == freshStock.StockId && sa.Source == fullSource);
+                    if (exists) continue;
+
+                    var score = await vader.ScoreAsync(item.Title);
+                    db.SentimentAnalyses.Add(new SentimentAnalysis
+                    {
+                        StockId = freshStock.StockId,
+                        SentimentScore = score,
+                        SentimentLabel = NewsSentimentScorer.LabelFromScore(score),
+                        Source = fullSource,
+                        AnalyzedAt = item.PublishedAtUtc
+                    });
+                    added++;
+                }
+
+                if (added > 0)
+                {
+                    await db.SaveChangesAsync();
+                    _logger.LogInformation("Watchlist add: ingested {Count} Finnhub news items for {Symbol}", added, symbol);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Background news ingestion failed for {Symbol}", symbol);
+            }
+        });
 
         return Ok(new { message = "Stock added to watchlist.", stockId = stock.StockId });
     }
@@ -336,6 +421,32 @@ public class StockController : ControllerBase
             })
             .ToListAsync()).Cast<object>().ToList();
 
+        if (results.Count == 0)
+        {
+            _logger.LogInformation("No DB results for {Query}, trying Finnhub symbol search", q);
+            var finnhubMatches = await _marketData.SearchSymbolsAsync(q);
+            if (finnhubMatches.Count > 0)
+            {
+                var matchSymbols = finnhubMatches.Select(m => m.Symbol).ToList();
+                var existing = await _context.Stocks
+                    .Where(s => matchSymbols.Contains(s.Symbol))
+                    .ToDictionaryAsync(s => s.Symbol, StringComparer.OrdinalIgnoreCase);
+
+                results = finnhubMatches.Select(m =>
+                {
+                    existing.TryGetValue(m.Symbol, out var dbStock);
+                    return (object)new
+                    {
+                        stockId = dbStock?.StockId ?? 0,
+                        symbol = m.Symbol,
+                        companyName = dbStock?.CompanyName ?? m.Description,
+                        sector = dbStock?.Sector ?? string.Empty,
+                        price = 0m
+                    };
+                }).ToList();
+            }
+        }
+
         if (results.Count == 0 && _apiKeys.Count > 0)
         {
             var key = GetAvailableApiKey();
@@ -354,7 +465,7 @@ public class StockController : ControllerBase
             }
             else
             {
-                _logger.LogInformation("No DB results for {Query}, trying Alpha Vantage", q);
+                _logger.LogInformation("No Finnhub results for {Query}, trying Alpha Vantage", q);
                 results = await SearchAlphaVantageAsync(q, key);
             }
         }
@@ -602,9 +713,31 @@ public class StockController : ControllerBase
     [HttpGet("{symbol}/details")]
     public async Task<IActionResult> GetDetails(string symbol)
     {
-        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
+        var sym = symbol.Trim().ToUpperInvariant();
+        var stock = await _context.Stocks.FirstOrDefaultAsync(s => s.Symbol == sym);
         if (stock == null)
-            return NotFound(new { message = "Stock not found." });
+        {
+            // Stock not in DB yet (came from Finnhub search) — create a stub and enrich immediately
+            stock = new Stock { Symbol = sym, CompanyName = sym };
+            _context.Stocks.Add(stock);
+            await _context.SaveChangesAsync();
+
+            var earlyEnrichment = await _marketData.GetEnrichmentAsync(sym);
+            if (earlyEnrichment != null)
+            {
+                if (!string.IsNullOrWhiteSpace(earlyEnrichment.Sector)) stock.Sector = earlyEnrichment.Sector;
+                if (earlyEnrichment.RegularMarketPrice > 0)
+                {
+                    _context.PriceData.Add(new PriceData
+                    {
+                        StockId = stock.StockId,
+                        Price = earlyEnrichment.RegularMarketPrice.Value,
+                        RecordedAt = DateTime.UtcNow
+                    });
+                }
+                await _context.SaveChangesAsync();
+            }
+        }
 
         await _marketData.RefreshQuoteIfStaleAsync(_context, stock);
 
@@ -1036,6 +1169,60 @@ public class StockController : ControllerBase
             _logger.LogWarning(ex, "Yahoo chart fallback failed for {Symbol} ({Range})", symbol, range);
             return [];
         }
+    }
+
+    // GET: api/Stock/{symbol}/export
+    // Returns a CSV file with price history + sentiment data for the given symbol.
+    [Authorize]
+    [HttpGet("{symbol}/export")]
+    public async Task<IActionResult> ExportToCsv(string symbol)
+    {
+        var stock = await _context.Stocks
+            .FirstOrDefaultAsync(s => s.Symbol == symbol.ToUpper());
+
+        if (stock == null)
+            return NotFound(new { message = "Stock not found." });
+
+        var prices = await _context.PriceData
+            .Where(p => p.StockId == stock.StockId)
+            .OrderByDescending(p => p.RecordedAt)
+            .Take(500)
+            .Select(p => new { p.RecordedAt, p.Price })
+            .ToListAsync();
+
+        var sentiments = await _context.SentimentAnalyses
+            .Where(s => s.StockId == stock.StockId)
+            .OrderByDescending(s => s.AnalyzedAt)
+            .Take(200)
+            .Select(s => new { s.AnalyzedAt, s.SentimentScore, s.SentimentLabel, s.Source })
+            .ToListAsync();
+
+        var sb = new System.Text.StringBuilder();
+
+        // Sheet 1: Price History
+        sb.AppendLine("FinPulse Export - " + stock.Symbol + " (" + stock.CompanyName + ")");
+        sb.AppendLine("Generated: " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm") + " UTC");
+        sb.AppendLine();
+
+        sb.AppendLine("=== Price History ===");
+        sb.AppendLine("Date,Time (UTC),Price (USD)");
+        foreach (var p in prices)
+        {
+            sb.AppendLine($"{p.RecordedAt:yyyy-MM-dd},{p.RecordedAt:HH:mm},{p.Price:F2}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("=== Sentiment Analysis ===");
+        sb.AppendLine("Date,Time (UTC),Score,Label,Source");
+        foreach (var s in sentiments)
+        {
+            var safeSource = s.Source?.Replace(",", ";") ?? "";
+            sb.AppendLine($"{s.AnalyzedAt:yyyy-MM-dd},{s.AnalyzedAt:HH:mm},{s.SentimentScore:F4},{s.SentimentLabel},{safeSource}");
+        }
+
+        var fileName = $"FinPulse_{stock.Symbol}_{DateTime.UtcNow:yyyyMMdd}.csv";
+        var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+        return File(bytes, "text/csv", fileName);
     }
 }
 

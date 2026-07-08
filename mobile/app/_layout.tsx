@@ -2,13 +2,13 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from "@expo-google-fonts/inter";
 import * as SplashScreen from "expo-splash-screen";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LogBox } from "react-native";
+import { LogBox, Platform } from "react-native";
 import {
   registerForPushNotifications,
   addNotificationResponseListener,
   shouldUseAndroidExpoGoLocalAlertFallback,
 } from "@/services/notification.service";
-import { getPreferences } from "@/services/user.service";
+import { getPreferences, registerDeviceToken } from "@/services/user.service";
 import { getAccessToken, subscribeSessionChange } from "@/stores/auth.storage";
 import { applyTheme } from "@/theme/colors";
 import { ThemeContext } from "@/stores/theme.store";
@@ -72,7 +72,10 @@ export default function RootLayout() {
     let cancelled = false;
     void (async () => {
       try {
-        await registerForPushNotifications({ silent: true });
+        const pushToken = await registerForPushNotifications({ silent: true });
+        if (pushToken) {
+          void registerDeviceToken(pushToken, Platform.OS).catch(() => {});
+        }
         const sub = await addNotificationResponseListener((response) => {
           const data = response.notification.request.content.data as { symbol?: string };
           if (data?.symbol) {

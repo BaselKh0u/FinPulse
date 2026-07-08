@@ -1,7 +1,19 @@
+import Constants from "expo-constants";
 import { clearSession, getAccessToken } from "@/stores/auth.storage";
 
-const BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || "http://localhost:5179/api";
+function resolveBaseUrl(): string {
+  const envUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (envUrl) return envUrl;
+  // In Expo Go (LAN mode), derive the server IP from the Expo dev server host
+  const hostUri = Constants.expoConfig?.hostUri;
+  if (hostUri) {
+    const ip = hostUri.split(":")[0];
+    return `http://${ip}:5179/api`;
+  }
+  return "http://localhost:5179/api";
+}
+
+export const BASE_URL = resolveBaseUrl();
 const REQUEST_TIMEOUT_MS = 12000;
 
 export const USE_MOCK = process.env.EXPO_PUBLIC_USE_MOCK === "true";

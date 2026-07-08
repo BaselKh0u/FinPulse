@@ -1,0 +1,5 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+nltk==3.9.1
+transformers>=4.40.0
+torch>=2.2.0

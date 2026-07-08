@@ -1,4 +1,7 @@
-import { apiRequest, USE_MOCK } from "./api";
+import { apiRequest, BASE_URL, USE_MOCK } from "./api";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
+import { getAccessToken } from "@/stores/auth.storage";
 import { Stock, StockDetails } from "../models/Stock";
 
 function safeNum(v: unknown, fallback: number): number {
@@ -370,4 +373,33 @@ export async function getStockHistory(symbol: string, range: string): Promise<St
     to: payload.to,
     retrievedAt: payload.retrievedAt,
   };
+}
+
+export async function exportStockToCsv(symbol: string): Promise<void> {
+  const token = await getAccessToken();
+  const url = `${BASE_URL}/Stock/${symbol}/export`;
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Export failed: ${response.status}`);
+  }
+
+  const csv = await response.text();
+  const fileName = `FinPulse_${symbol}_${new Date().toISOString().slice(0, 10)}.csv`;
+  const filePath = `${FileSystem.cacheDirectory}${fileName}`;
+
+  await FileSystem.writeAsStringAsync(filePath, csv, {
+    encoding: "utf8",
+  });
+
+  const canShare = await Sharing.isAvailableAsync();
+  if (canShare) {
+    await Sharing.shareAsync(filePath, {
+      mimeType: "text/csv",
+      dialogTitle: `Export ${symbol} data`,
+    });
+  }
 }
