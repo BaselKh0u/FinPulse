@@ -1,21 +1,20 @@
-using SendGrid;
-using SendGrid.Helpers.Mail;
+using Resend;
 
 namespace Server.Services
 {
     public class EmailService
     {
-        private readonly string _apiKey;
+        private readonly IResend _resend;
         private readonly string _fromEmail;
         private readonly string _fromName;
         private readonly string _publicBaseUrl;
 
-        public EmailService(IConfiguration configuration)
+        public EmailService(IResend resend, IConfiguration configuration)
         {
-            var section = configuration.GetSection("SendGrid");
-            _apiKey = section["ApiKey"]!;
-            _fromEmail = section["FromEmail"]!;
-            _fromName = section["FromName"]!;
+            _resend = resend;
+            var section = configuration.GetSection("Resend");
+            _fromEmail = section["FromEmail"] ?? "onboarding@resend.dev";
+            _fromName = section["FromName"] ?? "FinPulse";
             _publicBaseUrl = (configuration["App:PublicBaseUrl"] ?? "http://localhost:5179").Trim().TrimEnd('/');
         }
 
@@ -24,11 +23,6 @@ namespace Server.Services
             try
             {
                 Console.WriteLine($"[EmailService] Sending verification email to {toEmail}");
-
-                var client = new SendGridClient(_apiKey);
-                var from = new EmailAddress(_fromEmail, _fromName);
-                var to = new EmailAddress(toEmail);
-                var subject = "Verify your FinPulse email";
 
                 var verificationLink = $"{_publicBaseUrl}/api/Auth/verify-email?token={Uri.EscapeDataString(token)}";
 
@@ -49,18 +43,20 @@ namespace Server.Services
                     </html>
                     """;
 
-                var msg = MailHelper.CreateSingleEmail(from, to, subject, plainTextContent: null, htmlContent: htmlContent);
-                var response = await client.SendEmailAsync(msg);
+                var message = new EmailMessage
+                {
+                    From = new EmailAddress { Email = _fromEmail, DisplayName = _fromName },
+                    Subject = "Verify your FinPulse email",
+                    HtmlBody = htmlContent,
+                };
+                message.To.Add(toEmail);
 
-                var body = await response.Body.ReadAsStringAsync();
-                Console.WriteLine($"[EmailService] SendGrid status: {(int)response.StatusCode} {response.StatusCode}");
-                if (!string.IsNullOrWhiteSpace(body))
-                    Console.WriteLine($"[EmailService] SendGrid response body: {body}");
-
-                if ((int)response.StatusCode >= 400)
-                    Console.WriteLine($"[EmailService] ERROR — email was NOT sent. Check API key, sender verification, and the response body above.");
-                else
-                    Console.WriteLine($"[EmailService] Email sent successfully.");
+                var response = await _resend.EmailSendAsync(message);
+                Console.WriteLine($"[EmailService] Email sent successfully. Resend id: {response.Content}");
+            }
+            catch (ResendException ex)
+            {
+                Console.WriteLine($"[EmailService] ERROR — email was NOT sent. Status: {ex.StatusCode}, Type: {ex.ErrorType}, Message: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -69,15 +65,13 @@ namespace Server.Services
             }
         }
 
-        public async Task SendPasswordResetEmail(string toEmail)
+        public async Task SendPasswordResetEmail(string toEmail, string token)
         {
             try
             {
-                var client = new SendGridClient(_apiKey);
-                var from = new EmailAddress(_fromEmail, _fromName);
-                var to = new EmailAddress(toEmail);
-                var subject = "FinPulse password reset request";
-                var loginLink = $"{_publicBaseUrl}/auth/login";
+                Console.WriteLine($"[EmailService] Sending password reset email to {toEmail}");
+
+                var resetLink = $"{_publicBaseUrl}/api/Auth/reset-password-page?token={Uri.EscapeDataString(token)}";
 
                 var htmlContent = $"""
                     <!DOCTYPE html>
@@ -86,22 +80,32 @@ namespace Server.Services
                       <div style="max-width: 480px; margin: auto; background: #ffffff; border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                         <h2 style="color: #1a1a2e; margin-bottom: 8px;">Password reset requested</h2>
                         <p style="color: #444; font-size: 15px;">
-                          We received a request to reset your FinPulse password.
+                          We received a request to reset your FinPulse password. Tap the button below to choose a new one.
                         </p>
-                        <p style="color: #444; font-size: 15px;">
-                          For now, please use the in-app "Change Password" flow after logging in, or contact support if you are locked out.
-                        </p>
-                        <a href="{loginLink}"
+                        <a href="{resetLink}"
                            style="display: inline-block; margin-top: 20px; padding: 12px 28px; background-color: #4f8ef7; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 15px; font-weight: bold;">
-                          Open FinPulse
+                          Reset Password
                         </a>
+                        <p style="color: #888; font-size: 13px; margin-top: 28px;">This link expires in 1 hour. If you didn't request this, you can ignore this email.</p>
                       </div>
                     </body>
                     </html>
                     """;
 
-                var msg = MailHelper.CreateSingleEmail(from, to, subject, plainTextContent: null, htmlContent: htmlContent);
-                await client.SendEmailAsync(msg);
+                var message = new EmailMessage
+                {
+                    From = new EmailAddress { Email = _fromEmail, DisplayName = _fromName },
+                    Subject = "FinPulse password reset request",
+                    HtmlBody = htmlContent,
+                };
+                message.To.Add(toEmail);
+
+                var response = await _resend.EmailSendAsync(message);
+                Console.WriteLine($"[EmailService] Email sent successfully. Resend id: {response.Content}");
+            }
+            catch (ResendException ex)
+            {
+                Console.WriteLine($"[EmailService] ERROR — email was NOT sent. Status: {ex.StatusCode}, Type: {ex.ErrorType}, Message: {ex.Message}");
             }
             catch (Exception ex)
             {

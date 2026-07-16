@@ -110,7 +110,11 @@ export default function CreateAlertScreen() {
         isActive: true,
       });
 
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      try {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch {
+        // Haptics can fail on some devices/emulators — the alert is already saved, don't block navigation
+      }
 
       try {
         const typeLabel = ALERT_TYPE_CONFIG[selectedType].label;
@@ -326,7 +330,7 @@ export default function CreateAlertScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View style={styles.header}>
           <Pressable onPress={() => router.back()} style={styles.closeBtn} hitSlop={10}>

@@ -121,7 +121,7 @@ export async function sendLocalNotification(
       sound: "default",
       data: data ?? {},
     },
-    trigger: { type: "timeInterval" as const, seconds: 1 },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 1 },
   });
 }
 

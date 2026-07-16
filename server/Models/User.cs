@@ -23,5 +23,7 @@ namespace Server.Models
         public bool IsVerified { get; set; } = false;
         public string EmailVerificationToken { get; set; } = string.Empty;
         public DateTime? EmailVerificationTokenExpiry { get; set; }
+        public string PasswordResetToken { get; set; } = string.Empty;
+        public DateTime? PasswordResetTokenExpiry { get; set; }
     }
 }

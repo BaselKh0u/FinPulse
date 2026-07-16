@@ -173,7 +173,7 @@ export default function RegisterScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
       >
         <ScrollView
@@ -193,7 +193,7 @@ export default function RegisterScreen() {
             <Text style={styles.label}>First name</Text>
             <TextInput
               style={[styles.input, firstNameError ? styles.inputError : null]}
-              placeholder="Basel"
+              placeholder="First name"
               placeholderTextColor={Colors.placeholder}
               value={firstName}
               onChangeText={setFirstName}
@@ -211,7 +211,7 @@ export default function RegisterScreen() {
             <TextInput
               ref={lastNameRef}
               style={[styles.input, lastNameError ? styles.inputError : null]}
-              placeholder="Khoury"
+              placeholder="Last name"
               placeholderTextColor={Colors.placeholder}
               value={lastName}
               onChangeText={setLastName}
@@ -229,7 +229,7 @@ export default function RegisterScreen() {
             <TextInput
               ref={emailRef}
               style={[styles.input, emailError ? styles.inputError : null]}
-              placeholder="basel@example.com"
+              placeholder="Email address"
               placeholderTextColor={Colors.placeholder}
               value={email}
               onChangeText={setEmail}

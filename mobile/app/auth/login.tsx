@@ -100,7 +100,7 @@ export default function LoginScreen() {
     if (!token && !relogin) {
       Alert.alert(
         "Sign in required",
-        "Sign in with email and password once, enable Biometric Login in Profile, then you can use Face ID here after logging out."
+        `Sign in with email and password once, enable Biometric Login in Profile, then you can use ${biometricType} here after logging out.`
       );
       return;
     }
@@ -181,7 +181,7 @@ export default function LoginScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
       >
         <View style={styles.logoWrap}>
@@ -196,7 +196,7 @@ export default function LoginScreen() {
           <Text style={styles.label}>Email Address</Text>
           <TextInput
             style={[styles.input, emailError ? styles.inputError : null]}
-            placeholder="basel@example.com"
+            placeholder="Email address"
             placeholderTextColor={Colors.placeholder}
             value={email}
             onChangeText={setEmail}

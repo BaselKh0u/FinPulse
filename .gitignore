@@ -30,10 +30,11 @@ yarn-error.log*
 *.userosscache
 *.sln.docstates
 
-# .NET 
+# .NET
 bin/
 obj/
 server/out*/
 server/out*/**
 server/appsettings.json
 server/local-api-keys.txt
+server/.tmp-build/

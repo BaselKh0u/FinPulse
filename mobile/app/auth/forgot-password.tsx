@@ -78,7 +78,7 @@ export default function ForgotPasswordScreen() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
       >
         <Pressable onPress={() => router.back()} style={styles.back} hitSlop={10}>
@@ -97,7 +97,7 @@ export default function ForgotPasswordScreen() {
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="basel@example.com"
+            placeholder="Email address"
             placeholderTextColor={Colors.placeholder}
             returnKeyType="done"
             onSubmitEditing={onSend}

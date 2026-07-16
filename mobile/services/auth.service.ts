@@ -95,6 +95,18 @@ export async function forgotPassword(email: string): Promise<void> {
   });
 }
 
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  if (USE_MOCK) {
+    if (newPassword.length < 8) throw new Error("Password must be at least 8 characters.");
+    return;
+  }
+
+  await apiRequest<{ message: string }>("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, newPassword }),
+  });
+}
+
 export function logoutLocalSession() {
   void clearSession();
 }

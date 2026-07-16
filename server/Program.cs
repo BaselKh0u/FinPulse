@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Resend;
 using Server.BackgroundJobs;
 using Server.Config;
 using Server.Data;
@@ -105,6 +106,13 @@ if (avSection.GetValue("RunExtendedIngestionJob", defaultValue: true))
 
 builder.Services.AddHostedService<AlertTriggerJob>();
 builder.Services.AddHostedService<WatchlistRealtimeQuoteJob>();
+
+builder.Services.AddResend(o =>
+{
+    o.ApiToken = !string.IsNullOrWhiteSpace(builder.Configuration["Resend:ApiKey"])
+        ? builder.Configuration["Resend:ApiKey"]!
+        : Environment.GetEnvironmentVariable("Resend__ApiKey") ?? "";
+});
 
 builder.Services.AddScoped<JwtService>();
 builder.Services.AddScoped<EmailService>();
