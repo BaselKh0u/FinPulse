@@ -16,7 +16,6 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { AlertType, ALERT_TYPE_CONFIG } from "@/models/Alert";
 import { createAlert, getAlerts } from "@/services/alert.service";
 import { searchStocks } from "@/services/stock.service";
-import { scheduleAlertNotification } from "@/services/notification.service";
 import { Stock } from "@/models/Stock";
 import { Colors, Fonts } from "@/theme";
 import { useTheme } from "@/stores/theme.store";
@@ -111,13 +110,6 @@ export default function CreateAlertScreen() {
       });
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      try {
-        const typeLabel = ALERT_TYPE_CONFIG[selectedType].label;
-        await scheduleAlertNotification(selectedStock.symbol, typeLabel, desc);
-      } catch {
-        // Notification scheduling can fail in Expo Go — ignore silently
-      }
       router.back();
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to create alert. Please try again.");
